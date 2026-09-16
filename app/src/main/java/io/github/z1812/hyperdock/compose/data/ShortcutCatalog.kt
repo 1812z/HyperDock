@@ -31,6 +31,8 @@ data class ShortcutItem(
     val icon: ImageVector? = null,
     /** 第三方开关所属应用包名，用于加载应用图标。 */
     val packageName: String? = null,
+    /** 第三方 QS Tile 组件名，用于加载该快捷方式自身图标。 */
+    val tileComponent: ComponentName? = null,
 )
 
 /** 快捷方式目录：内置系统开关 + 已安装第三方 QS Tile。 */
@@ -94,6 +96,7 @@ object ShortcutCatalog {
                 owner = owner,
                 isSystem = false,
                 packageName = info.packageName,
+                tileComponent = component,
             )
         }
     }
