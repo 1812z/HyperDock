@@ -1,6 +1,7 @@
 package io.github.z1812.hyperdock.xposed
 
 import io.github.z1812.hyperdock.xposed.hook.Sidebar.SidebarDefaultExpandHook
+import io.github.z1812.hyperdock.xposed.hook.Sidebar.SidebarHideAllAppsButtonHook
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 
@@ -19,6 +20,7 @@ class HyperDockModule : XposedModule() {
         when (param.packageName) {
             "com.miui.securitycenter" -> {
                 SidebarDefaultExpandHook.init(this, param)
+                SidebarHideAllAppsButtonHook.init(this, param)
             }
         }
     }

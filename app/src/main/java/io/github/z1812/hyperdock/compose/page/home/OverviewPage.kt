@@ -3,9 +3,12 @@
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -133,9 +136,7 @@ internal fun OverviewPage(
             StatusCard(
                 status = state.status,
                 appVersion = state.systemInfo?.appVersion,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(2.2f),
+                modifier = Modifier.fillMaxWidth(),
                 onClick = { showRestartDialog = true },
             )
         }
@@ -243,46 +244,68 @@ private fun StatusCard(
     onClick: () -> Unit,
 ) {
     val active = status?.active == true
-    val statusColor = if (active) ActiveColor else InactiveColor
-    val statusBackground = if (active) ActiveBackground else InactiveBackground
-    Card(
-        modifier = modifier,
-        colors = CardDefaults.defaultColors(color = statusBackground),
-        pressFeedbackType = PressFeedbackType.Tilt,
-        showIndication = true,
-        onClick = onClick,
+    val dynamicColor = MiuixTheme.isDynamicColor
+    val isDark = MiuixTheme.colorScheme.background.luminance() <= 0.5f
+    val background = when {
+        active && dynamicColor -> MiuixTheme.colorScheme.secondaryContainer
+        active && isDark -> ActiveBackgroundDark
+        active -> ActiveBackgroundLight
+        dynamicColor -> MiuixTheme.colorScheme.errorContainer
+        isDark -> InactiveBackgroundDark
+        else -> InactiveBackgroundLight
+    }
+    val iconTint = if (dynamicColor) {
+        if (active) MiuixTheme.colorScheme.primary.copy(alpha = 0.8f) else MiuixTheme.colorScheme.error
+    } else {
+        if (active) ActiveColor else InactiveColor
+    }
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            Box(
-                modifier = Modifier.fillMaxSize().offset(19.dp, 23.dp),
-                contentAlignment = Alignment.BottomEnd,
-            ) {
-                Icon(
-                    modifier = Modifier.size(96.dp),
-                    painter = painterResource(R.drawable.ic_check_circle_outline),
-                    contentDescription = null,
-                    tint = statusColor.copy(alpha = 0.78f),
-                )
-            }
-            Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-                Text(
-                    text = stringResource(
-                        if (active) R.string.activated else R.string.not_activated,
-                    ),
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color(0xFF101010),
-                )
-                Text(
-                    text = stringResource(
-                        R.string.software_version,
-                        appVersion.orEmpty().ifBlank { stringResource(R.string.unknown) },
-                    ),
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = if (active) Color(0xFF101010) else statusColor,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.defaultColors(color = background),
+            pressFeedbackType = PressFeedbackType.Tilt,
+            showIndication = true,
+            onClick = onClick,
+        ) {
+            Box {
+                Box(
+                    modifier = Modifier.fillMaxSize().offset(27.dp, 31.dp),
+                    contentAlignment = Alignment.BottomEnd,
+                ) {
+                    Icon(
+                        modifier = Modifier.size(110.dp),
+                        painter = painterResource(R.drawable.ic_check_circle_outline),
+                        contentDescription = null,
+                        tint = iconTint,
+                    )
+                }
+                Box(
+                    modifier = Modifier.fillMaxSize().padding(16.dp, 14.dp),
+                    contentAlignment = Alignment.TopStart,
+                ) {
+                    Column {
+                        Text(
+                            text = stringResource(
+                                if (active) R.string.activated else R.string.not_activated,
+                            ),
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(Modifier.height(1.dp))
+                        Text(
+                            text = stringResource(
+                                R.string.software_version,
+                                appVersion.orEmpty().ifBlank { stringResource(R.string.unknown) },
+                            ),
+                            fontSize = 15.sp,
+                        )
+                    }
+                }
             }
         }
     }
@@ -341,9 +364,11 @@ private const val DOCUMENTATION_URL = "https://github.com/1812z/hyperdock"
 private const val RESOURCES_URL = "https://github.com/1812z/hyperdock/releases"
 private const val MIN_SUPPORTED_API = 101
 private val ActiveColor = Color(0xFF36D167)
-private val ActiveBackground = Color(0xFFDFFAE4)
-private val InactiveColor = Color(0xFFFF5A52)
-private val InactiveBackground = Color(0xFFFFE5E3)
+private val ActiveBackgroundLight = Color(0xFFDFFAE4)
+private val ActiveBackgroundDark = Color(0xFF1A3825)
+private val InactiveColor = Color(0xFFF72727)
+private val InactiveBackgroundLight = Color(0xFFF8E2E2)
+private val InactiveBackgroundDark = Color(0xFF310808)
 private val WarningBackgroundLight = Color(0xFFFFF3D6)
 private val WarningContentLight = Color(0xFF704D00)
 private val WarningBackgroundDark = Color(0xFF3A2D12)

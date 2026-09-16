@@ -29,6 +29,8 @@
     <string name="sidebar_behavior">Behavior</string>
     <string name="sidebar_expand_all_apps">Expand all apps by default</string>
     <string name="sidebar_expand_all_apps_summary">Show the all-apps panel as soon as the sidebar opens, animated together with the sidebar itself</string>
+    <string name="sidebar_hide_all_apps_button">Hide all-apps button</string>
+    <string name="sidebar_hide_all_apps_button_summary">Remove the bottom button that expands or collapses all apps, and reclaim its reserved space</string>
 
     <!-- Misc -->
     <string name="misc">Misc</string>

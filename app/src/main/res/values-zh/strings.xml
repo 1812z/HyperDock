@@ -27,6 +27,8 @@
     <string name="sidebar_behavior">行为</string>
     <string name="sidebar_expand_all_apps">默认展开全部应用</string>
     <string name="sidebar_expand_all_apps_summary">侧边栏滑出时即显示全部应用面板，并与侧边栏整体一起动画</string>
+    <string name="sidebar_hide_all_apps_button">隐藏全部应用按钮</string>
+    <string name="sidebar_hide_all_apps_button_summary">移除底部用于展开/收起全部应用的按钮，并回收其占用的空间</string>
 
     <string name="misc">杂项</string>
     <string name="hide_desktop_icon">隐藏桌面图标</string>
