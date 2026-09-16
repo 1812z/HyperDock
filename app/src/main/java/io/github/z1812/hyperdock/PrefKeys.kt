@@ -23,6 +23,9 @@ object PrefKeys {
 
     // 侧边栏
     const val SIDEBAR_EXPAND_ALL_APPS = "sidebar_expand_all_apps"
+    const val ALL_APPS_CUSTOM_ENABLED = "all_apps_custom_enabled"
+    const val ALL_APPS_CUSTOM_MODE = "all_apps_custom_mode"
+    const val ALL_APPS_CUSTOM_PACKAGES = "all_apps_custom_packages"
 
     // 快捷方式
     const val SHORTCUTS_ENABLED = "shortcuts_enabled"
@@ -47,6 +50,9 @@ object PrefKeys {
         BLUR_BARS,
         PREDICTIVE_BACK_MAX_TRANSLATION,
         SIDEBAR_EXPAND_ALL_APPS,
+        ALL_APPS_CUSTOM_ENABLED,
+        ALL_APPS_CUSTOM_MODE,
+        ALL_APPS_CUSTOM_PACKAGES,
         SHORTCUTS_ENABLED,
         SHORTCUTS_ADDED,
     )

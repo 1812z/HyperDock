@@ -63,6 +63,8 @@ import io.github.z1812.hyperdock.compose.page.home.rememberHomeOverviewState
 import io.github.z1812.hyperdock.compose.page.settings.BackupRestorePage
 import io.github.z1812.hyperdock.compose.page.settings.MiscPage
 import io.github.z1812.hyperdock.compose.page.settings.SidebarBehaviorPage
+import io.github.z1812.hyperdock.compose.page.settings.AllAppsPage
+import io.github.z1812.hyperdock.compose.page.settings.CustomAppsPage
 import io.github.z1812.hyperdock.compose.page.settings.ShortcutPage
 import io.github.z1812.hyperdock.compose.page.settings.ThemeSettingsPage
 import io.github.z1812.hyperdock.compose.service.UpdateService
@@ -119,7 +121,9 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
     )
     var visibleDetail by remember { mutableStateOf<SettingsDetail?>(null) }
     var detailShown by remember { mutableStateOf(false) }
+    var customAppsShown by remember { mutableStateOf(false) }
     val detailNavigationState = rememberPredictiveNavigationLayerState()
+    val customAppsNavigationState = rememberPredictiveNavigationLayerState()
     val bottomBarProgress = remember { Animatable(0f) }
     var bottomBarHeightPx by remember { mutableIntStateOf(0) }
     var bottomBarComposed by remember { mutableStateOf(true) }
@@ -215,6 +219,7 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
     }
 
     fun closeDetail() {
+        customAppsShown = false
         detailShown = false
     }
 
@@ -236,7 +241,7 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
 
     PredictiveNavigationBackHandler(
         visible = detailShown,
-        enabled = detailShown,
+        enabled = detailShown && !customAppsShown,
         state = detailNavigationState,
         maxTranslationPercent = predictiveBackMaxTranslation.value,
         onDismiss = { detailShown = false },
@@ -246,6 +251,14 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
                 tween(LAYER_EXIT_DURATION, easing = FastOutSlowInEasing),
             )
         },
+    )
+
+    PredictiveNavigationBackHandler(
+        visible = customAppsShown,
+        enabled = customAppsShown,
+        state = customAppsNavigationState,
+        maxTranslationPercent = predictiveBackMaxTranslation.value,
+        onDismiss = { customAppsShown = false },
     )
 
     BarBlurHost(
@@ -315,16 +328,45 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
                         PredictiveNavigationLayer(
                             visible = detailShown,
                             state = detailNavigationState,
+                            backgroundState = customAppsNavigationState,
                             maxTranslationPercent = predictiveBackMaxTranslation.value,
                         ) {
                             when (visibleDetail) {
                                 SettingsDetail.Sidebar,
                                 SettingsDetail.SidebarBehavior,
+                                SettingsDetail.AllApps -> AllAppsPage(
+                                    prefs = prefs,
+                                    onBack = ::closeDetail,
+                                    onOpenApps = { customAppsShown = true },
+                                )
                                 null -> SidebarBehaviorPage(prefs, ::closeDetail)
                                 SettingsDetail.Shortcuts -> ShortcutPage(prefs, ::closeDetail)
                                 SettingsDetail.Theme -> ThemeSettingsPage(prefs, ::closeDetail)
                                 SettingsDetail.Misc -> MiscPage(prefs, ::closeDetail)
                                 SettingsDetail.BackupRestore -> BackupRestorePage(::closeDetail)
+                            }
+
+                        }
+                    }
+
+                    PredictiveNavigationBackdrop(
+                        state = customAppsNavigationState,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
+                    BarBlurHost(
+                        enabled = blurBars.value,
+                    ) {
+                        BarBackdropContent(modifier = Modifier.fillMaxSize()) {
+                            PredictiveNavigationLayer(
+                                visible = customAppsShown,
+                                state = customAppsNavigationState,
+                                maxTranslationPercent = predictiveBackMaxTranslation.value,
+                            ) {
+                                CustomAppsPage(
+                                    prefs = prefs,
+                                    onBack = { customAppsShown = false },
+                                )
                             }
                         }
                     }

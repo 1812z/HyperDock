@@ -29,6 +29,16 @@
     <string name="sidebar_behavior">Behavior</string>
     <string name="sidebar_expand_all_apps">Expand all apps by default</string>
     <string name="sidebar_expand_all_apps_summary">Show the all-apps panel as soon as the sidebar opens, animated together with the sidebar itself</string>
+    <string name="all_apps">All apps</string>
+    <string name="all_apps_custom_enabled">Use custom app list</string>
+    <string name="all_apps_custom_enabled_summary">Choose which apps are shown in the all-apps panel</string>
+    <string name="all_apps_custom_mode">Selection mode</string>
+    <string name="all_apps_whitelist">Whitelist: show selected apps</string>
+    <string name="all_apps_blacklist">Blacklist: hide selected apps</string>
+    <string name="all_apps_custom_apps">Custom apps</string>
+    <string name="all_apps_custom_apps_summary">Select apps to show or hide</string>
+    <string name="all_apps_no_apps">No launchable apps found</string>
+    <string name="search_apps">Search apps</string>
 
     <!-- Shortcuts -->
     <string name="shortcuts">Shortcuts</string>

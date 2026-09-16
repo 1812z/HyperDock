@@ -17,6 +17,7 @@ import io.github.z1812.hyperdock.compose.data.PrefsRepository
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Backup
+import top.yukonga.miuix.kmp.icon.extended.GridView
 import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.icon.extended.Sidebar
 import top.yukonga.miuix.kmp.icon.extended.Theme
@@ -26,6 +27,7 @@ import top.yukonga.miuix.kmp.icon.extended.Tune
 internal enum class SettingsDetail {
     Sidebar,
     SidebarBehavior,
+    AllApps,
     Shortcuts,
     Theme,
     Misc,
@@ -49,11 +51,9 @@ internal fun SettingsPage(
                 SettingsActionWithArrow(stringResource(R.string.sidebar_behavior), MiuixIcons.Sidebar) {
                     onOpenDetail(SettingsDetail.SidebarBehavior)
                 }
-            }
-        }
-        item {
-            SectionTitle(stringResource(R.string.shortcuts))
-            Card(modifier = Modifier.fillMaxWidth()) {
+                SettingsActionWithArrow(stringResource(R.string.all_apps), MiuixIcons.GridView) {
+                    onOpenDetail(SettingsDetail.AllApps)
+                }
                 SettingsActionWithArrow(stringResource(R.string.shortcuts), MiuixIcons.Tune) {
                     onOpenDetail(SettingsDetail.Shortcuts)
                 }
