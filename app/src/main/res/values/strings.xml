@@ -1,0 +1,123 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="module_description">Sidebar enhancements for HyperOS</string>
+
+    <!-- Compose / Miuix -->
+    <string name="nav_home">Home</string>
+    <string name="nav_settings">Settings</string>
+    <string name="about">About</string>
+
+    <string name="activated">Activated</string>
+    <string name="not_activated">Not Activated</string>
+    <string name="lsposed_service_unavailable">LSPosed service not connected</string>
+    <string name="lsposed_service_unavailable_summary">Please confirm that the module is enabled in LSPosed and reopen the app</string>
+    <string name="lsposed_version_unsupported">LSPosed version is too low</string>
+    <string name="update_lsposed">Please update LSPosed</string>
+    <string name="security_center_scope_missing">Security Center scope is not enabled</string>
+    <string name="enable_security_center_scope">Please select Security Center in the LSPosed scope</string>
+    <string name="framework_details">%1$s %2$s (%3$d) API %4$d</string>
+    <string name="software_version">Software version: %1$s</string>
+
+    <string name="system_version">System version</string>
+    <string name="app_version">Application version</string>
+    <string name="xposed_framework">Xposed framework</string>
+    <string name="device_model">Device model</string>
+    <string name="unknown">Unknown</string>
+
+    <!-- Sidebar -->
+    <string name="sidebar">Sidebar</string>
+    <string name="sidebar_behavior">Behavior</string>
+    <string name="sidebar_expand_all_apps">Expand all apps by default</string>
+    <string name="sidebar_expand_all_apps_summary">Show the all-apps panel as soon as the sidebar opens, animated together with the sidebar itself</string>
+
+    <!-- Misc -->
+    <string name="misc">Misc</string>
+    <string name="hide_desktop_icon">Hide desktop icon</string>
+    <string name="hide_desktop_icon_summary">Hide the app icon from launcher. Open via LSPosed Manager after hiding</string>
+    <string name="check_update">Check for updates on launch</string>
+    <string name="check_update_summary">Automatically check for new versions when the app starts</string>
+    <string name="debug_log">Show debug logs</string>
+    <string name="debug_log_summary">When enabled, Hook debug logs are output; when disabled, only warning and error logs are kept</string>
+
+    <!-- Appearance -->
+    <string name="appearance">Appearance</string>
+    <string name="theme">Theme</string>
+    <string name="follow_system">Follow system</string>
+    <string name="light">Light</string>
+    <string name="dark">Dark</string>
+    <string name="theme_color">Theme color</string>
+    <string name="theme_color_summary">Customize the app accent color</string>
+    <string name="monet_color">Monet color</string>
+    <string name="monet_color_summary">Generate software color matching using selected colors</string>
+    <string name="floating_navigation_bar">Floating bottom bar</string>
+    <string name="floating_navigation_bar_summary">Use a floating bottom bar</string>
+    <string name="liquid_glass_navigation_bar">Liquid glass bottom bar</string>
+    <string name="liquid_glass_navigation_bar_summary">Replace the floating bottom bar with a liquid glass effect</string>
+    <string name="interface_blur">Blur</string>
+    <string name="interface_blur_summary">Enable interface blur, including top and bottom bars</string>
+    <string name="predictive_back_distance">Predicted back distance</string>
+    <string name="predictive_back_distance_summary">Adjust the maximum traverse distance of the page in the back gesture</string>
+    <string name="reset_default">Restore default</string>
+    <string name="language">Language</string>
+    <string name="chinese">简体中文</string>
+    <string name="english">English</string>
+
+    <!-- About -->
+    <string name="about_developer">Developer</string>
+    <string name="developer_name">芥子</string>
+    <string name="developer_handle">@1812z</string>
+    <string name="developer_avatar">Developer avatar</string>
+    <string name="about_module">Module</string>
+    <string name="about_project">Project</string>
+    <string name="github">GitHub</string>
+    <string name="github_summary">1812z/hyperdock</string>
+    <string name="check_update_action">Check for updates</string>
+    <string name="new_version_found">New version available</string>
+    <string name="current_version">Current version: %1$s</string>
+    <string name="latest_version">Latest version: %1$s</string>
+    <string name="already_latest">Already on the latest version</string>
+    <string name="update_check_failed">Check for updates failed</string>
+    <string name="update_check_failed_message">Failed to check for updates, please check the network connection</string>
+    <string name="view">Check</string>
+
+    <!-- Home -->
+    <string name="documentation">Project home</string>
+    <string name="documentation_summary">Click to view the project page and usage guide</string>
+    <string name="related_resources">Releases</string>
+    <string name="related_resources_summary">Download the latest module builds</string>
+
+    <!-- Restart scope -->
+    <string name="restart_scope">Restart scope</string>
+    <string name="restart_scope_summary">Select the scoped app to restart via root</string>
+    <string name="restart_root_required">Please check if ROOT permission has been granted to this app</string>
+    <string name="security_center">Security Center</string>
+
+    <!-- Backup & restore -->
+    <string name="backup_restore">Backup &amp; restore</string>
+    <string name="config">Config</string>
+    <string name="backup_export_file">Export to file</string>
+    <string name="backup_export_file_summary">Save the current configuration as a JSON file</string>
+    <string name="backup_export_clipboard">Copy to clipboard</string>
+    <string name="backup_export_clipboard_summary">Copy the current configuration JSON to the clipboard</string>
+    <string name="backup_import_file">Import from file</string>
+    <string name="backup_import_file_summary">Restore the configuration from a JSON file</string>
+    <string name="backup_import_clipboard">Import from clipboard</string>
+    <string name="backup_import_clipboard_summary">Restore the configuration from clipboard JSON</string>
+
+    <string name="backup_exported">Exported</string>
+    <string name="backup_copied">Copied to clipboard</string>
+    <string name="backup_imported">Imported %1$d items</string>
+    <string name="backup_export_failed">Export failed</string>
+    <string name="backup_import_failed">Import failed</string>
+    <string name="backup_error_invalid_format">Invalid configuration format</string>
+    <string name="backup_error_no_file_selected">No file selected</string>
+    <string name="backup_error_empty_clipboard">Clipboard is empty</string>
+
+    <!-- Common -->
+    <string name="cancel">Cancel</string>
+    <string name="confirm">Confirm</string>
+    <string name="save">Save</string>
+    <string name="back">Back</string>
+    <string name="slider_input_value">Value</string>
+    <string name="slider_input_range">Enter a value from %1$s to %2$s</string>
+</resources>

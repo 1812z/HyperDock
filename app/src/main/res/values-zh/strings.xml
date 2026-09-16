@@ -1,0 +1,114 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="module_description">HyperOS 侧边栏增强模块</string>
+
+    <string name="nav_home">主页</string>
+    <string name="nav_settings">设置</string>
+    <string name="about">关于</string>
+
+    <string name="activated">已激活</string>
+    <string name="not_activated">未激活</string>
+    <string name="lsposed_service_unavailable">LSPosed 服务未连接</string>
+    <string name="lsposed_service_unavailable_summary">请确认已在 LSPosed 中启用模块，然后重新打开应用</string>
+    <string name="lsposed_version_unsupported">LSPosed 版本过低</string>
+    <string name="update_lsposed">请更新 LSPosed 版本</string>
+    <string name="security_center_scope_missing">安全中心作用域未启用</string>
+    <string name="enable_security_center_scope">请在 LSPosed 作用域中勾选安全中心</string>
+    <string name="framework_details">%1$s %2$s (%3$d) API %4$d</string>
+    <string name="software_version">软件版本：%1$s</string>
+
+    <string name="system_version">系统版本</string>
+    <string name="app_version">应用版本</string>
+    <string name="xposed_framework">Xposed 框架</string>
+    <string name="device_model">设备型号</string>
+    <string name="unknown">未知</string>
+
+    <string name="sidebar">侧边栏</string>
+    <string name="sidebar_behavior">行为</string>
+    <string name="sidebar_expand_all_apps">默认展开全部应用</string>
+    <string name="sidebar_expand_all_apps_summary">侧边栏滑出时即显示全部应用面板，并与侧边栏整体一起动画</string>
+
+    <string name="misc">杂项</string>
+    <string name="hide_desktop_icon">隐藏桌面图标</string>
+    <string name="hide_desktop_icon_summary">从桌面隐藏应用图标，隐藏后可通过 LSPosed 管理器打开</string>
+    <string name="check_update">启动时检查更新</string>
+    <string name="check_update_summary">应用启动时自动检查新版本</string>
+    <string name="debug_log">输出调试日志</string>
+    <string name="debug_log_summary">开启后输出 Hook 调试日志，关闭后仅保留警告与错误日志</string>
+
+    <string name="appearance">外观</string>
+    <string name="theme">主题</string>
+    <string name="follow_system">跟随系统</string>
+    <string name="light">浅色</string>
+    <string name="dark">深色</string>
+    <string name="theme_color">主题色</string>
+    <string name="theme_color_summary">自定义应用主题强调色</string>
+    <string name="monet_color">莫奈取色</string>
+    <string name="monet_color_summary">使用所选颜色生成软件配色</string>
+    <string name="floating_navigation_bar">悬浮底栏</string>
+    <string name="floating_navigation_bar_summary">使用悬浮样式的底栏</string>
+    <string name="liquid_glass_navigation_bar">液态玻璃底栏</string>
+    <string name="liquid_glass_navigation_bar_summary">将悬浮底栏替换为液态玻璃效果</string>
+    <string name="interface_blur">界面模糊</string>
+    <string name="interface_blur_summary">开启界面模糊，包括顶栏与底栏</string>
+    <string name="predictive_back_distance">预测返回距离</string>
+    <string name="predictive_back_distance_summary">调整返回手势中页面的最大位移距离</string>
+    <string name="reset_default">恢复默认</string>
+    <string name="language">语言</string>
+    <string name="chinese">简体中文</string>
+    <string name="english">English</string>
+
+    <string name="about_developer">开发者</string>
+    <string name="developer_name">芥子</string>
+    <string name="developer_handle">@1812z</string>
+    <string name="developer_avatar">开发者头像</string>
+    <string name="about_module">模块</string>
+    <string name="about_project">项目</string>
+    <string name="github">GitHub</string>
+    <string name="github_summary">1812z/hyperdock</string>
+    <string name="check_update_action">检查更新</string>
+    <string name="new_version_found">发现新版本</string>
+    <string name="current_version">当前版本：%1$s</string>
+    <string name="latest_version">最新版本：%1$s</string>
+    <string name="already_latest">已是最新版本</string>
+    <string name="update_check_failed">检查更新失败</string>
+    <string name="update_check_failed_message">检查更新失败，请检查网络连接</string>
+    <string name="view">查看</string>
+
+    <string name="documentation">项目主页</string>
+    <string name="documentation_summary">点击查看项目主页与使用说明</string>
+    <string name="related_resources">下载页面</string>
+    <string name="related_resources_summary">下载最新模块版本</string>
+
+    <string name="restart_scope">重启作用域</string>
+    <string name="restart_scope_summary">选择需要通过 root 重启的作用域应用</string>
+    <string name="restart_root_required">请检查是否已授予本应用 ROOT 权限</string>
+    <string name="security_center">安全中心</string>
+
+    <string name="backup_restore">备份与恢复</string>
+    <string name="config">配置</string>
+    <string name="backup_export_file">导出到文件</string>
+    <string name="backup_export_file_summary">将当前配置保存为 JSON 文件</string>
+    <string name="backup_export_clipboard">复制到剪贴板</string>
+    <string name="backup_export_clipboard_summary">将当前配置 JSON 复制到剪贴板</string>
+    <string name="backup_import_file">从文件导入</string>
+    <string name="backup_import_file_summary">从 JSON 文件恢复配置</string>
+    <string name="backup_import_clipboard">从剪贴板导入</string>
+    <string name="backup_import_clipboard_summary">从剪贴板 JSON 恢复配置</string>
+
+    <string name="backup_exported">已导出</string>
+    <string name="backup_copied">已复制到剪贴板</string>
+    <string name="backup_imported">已导入 %1$d 项</string>
+    <string name="backup_export_failed">导出失败</string>
+    <string name="backup_import_failed">导入失败</string>
+    <string name="backup_error_invalid_format">配置文件格式无效</string>
+    <string name="backup_error_no_file_selected">未选择文件</string>
+    <string name="backup_error_empty_clipboard">剪贴板为空</string>
+
+    <string name="cancel">取消</string>
+    <string name="confirm">确定</string>
+    <string name="save">保存</string>
+    <string name="back">返回</string>
+    <string name="slider_input_value">数值</string>
+    <string name="slider_input_range">请输入 %1$s 到 %2$s 之间的数值</string>
+</resources>

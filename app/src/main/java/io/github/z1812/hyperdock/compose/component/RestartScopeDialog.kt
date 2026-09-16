@@ -1,0 +1,168 @@
+package io.github.z1812.hyperdock.compose.component
+
+import androidx.annotation.StringRes
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.state.ToggleableState
+import androidx.compose.ui.unit.dp
+import io.github.z1812.hyperdock.R
+import io.github.z1812.hyperdock.compose.service.RestartScopeService
+import kotlinx.coroutines.launch
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.Checkbox
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.window.WindowDialog
+
+internal data class RestartScopeTarget(
+    val packageName: String,
+    @StringRes val label: Int,
+    val command: String,
+)
+
+internal val RestartScopeTargets = listOf(
+    RestartScopeTarget(
+        packageName = "com.miui.securitycenter",
+        label = R.string.security_center,
+        command = "am force-stop com.miui.securitycenter",
+    ),
+)
+
+/**
+ * 重启作用域弹窗。
+ */
+@Composable
+internal fun RestartScopeDialog(
+    show: Boolean,
+    onDismiss: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var selectedPackages by remember(show) {
+        mutableStateOf(RestartScopeTargets.map { it.packageName }.toSet())
+    }
+    var restarting by remember(show) { mutableStateOf(false) }
+    var error by remember(show) { mutableStateOf<String?>(null) }
+    val rootRequired = stringResource(R.string.restart_root_required)
+
+    WindowDialog(
+        show = show,
+        title = stringResource(R.string.restart_scope),
+        summary = stringResource(R.string.restart_scope_summary),
+        onDismissRequest = { if (!restarting) onDismiss() },
+    ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 300.dp)
+                .padding(bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            items(RestartScopeTargets, key = { it.packageName }) { target ->
+                val checked = target.packageName in selectedPackages
+                RestartScopeRow(
+                    label = stringResource(target.label),
+                    checked = checked,
+                    enabled = !restarting,
+                    onClick = {
+                        selectedPackages = if (checked) {
+                            selectedPackages - target.packageName
+                        } else {
+                            selectedPackages + target.packageName
+                        }
+                    },
+                )
+            }
+        }
+        error?.let {
+            Text(
+                it,
+                color = RestartErrorColor,
+                modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp),
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TextButton(
+                text = stringResource(R.string.cancel),
+                enabled = !restarting,
+                onClick = onDismiss,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(
+                text = stringResource(R.string.confirm),
+                enabled = !restarting && selectedPackages.isNotEmpty(),
+                onClick = {
+                    val commands = RestartScopeTargets
+                        .filter { it.packageName in selectedPackages }
+                        .map { it.command }
+                    restarting = true
+                    error = null
+                    scope.launch {
+                        RestartScopeService.restart(commands)
+                            .onSuccess { onDismiss() }
+                            .onFailure { error = rootRequired }
+                        restarting = false
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun RestartScopeRow(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled, role = Role.Checkbox, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.weight(1f),
+            color = MiuixTheme.colorScheme.onSurface,
+            style = MiuixTheme.textStyles.headline1,
+        )
+        Spacer(Modifier.width(12.dp))
+        Checkbox(
+            state = ToggleableState(checked),
+            onClick = onClick,
+            enabled = enabled,
+        )
+    }
+}
+
+private val RestartErrorColor = Color(0xFFFF5A52)
