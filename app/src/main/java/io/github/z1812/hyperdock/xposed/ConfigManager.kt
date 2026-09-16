@@ -99,6 +99,13 @@ object ConfigManager {
 
     fun getDouble(key: String, default: Double): Double = getFloat(key, default.toFloat()).toDouble()
 
+    fun getStringSet(key: String, default: Set<String> = emptySet()): Set<String> =
+        try {
+            prefsForKey(key)?.getStringSet(key, default)?.toSet() ?: default
+        } catch (_: ClassCastException) {
+            default
+        }
+
     fun contains(key: String): Boolean = prefsForKey(key)?.contains(key) ?: false
 
     fun isDebugLogEnabled(): Boolean = getBoolean(PrefKeys.DEBUG_LOG, false)

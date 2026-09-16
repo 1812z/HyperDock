@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import io.github.z1812.hyperdock.PrefKeys
 import io.github.z1812.hyperdock.compose.data.PrefsRepository
+import org.json.JSONArray
 import org.json.JSONObject
 
 /** 导出/导入全部配置。 */
@@ -14,7 +15,7 @@ internal object ConfigBackupService {
         val settings = JSONObject()
         prefs(context).all.forEach { (key, value) ->
             if (key !in PrefKeys.SYNCED) return@forEach
-            settings.put(key, value ?: JSONObject.NULL)
+            settings.put(key, toJsonValue(value))
         }
         val appVersion = runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
@@ -39,6 +40,12 @@ internal object ConfigBackupService {
             val value = settings.opt(key)
             if (value == null || value === JSONObject.NULL) return@forEach
             when {
+                value is JSONArray -> {
+                    val set = (0 until value.length())
+                        .mapNotNull { value.optString(it).takeIf { s -> s.isNotEmpty() } }
+                        .toSet()
+                    editor.putStringSet(key, set)
+                }
                 value is Boolean -> editor.putBoolean(key, value)
                 value is Float || value is Double -> editor.putFloat(key, (value as Number).toFloat())
                 value is Number -> editor.putLong(key, value.toLong())
@@ -57,6 +64,12 @@ internal object ConfigBackupService {
 
     private fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PrefsRepository.PREFS_NAME, Context.MODE_PRIVATE)
+
+    private fun toJsonValue(value: Any?): Any = when (value) {
+        is Set<*> -> JSONArray(value.filterIsInstance<String>().sorted())
+        null -> JSONObject.NULL
+        else -> value
+    }
 }
 
 internal class InvalidConfigException : IllegalArgumentException()

@@ -54,3 +54,18 @@ internal fun rememberLongPreference(
     }
     return state
 }
+
+@Composable
+internal fun rememberStringSetPreference(
+    prefs: PrefsRepository,
+    key: String,
+): MutableState<Set<String>> {
+    val state = remember(prefs, key) { mutableStateOf(prefs.getStringSet(key)) }
+    DisposableEffect(prefs, key) {
+        val unregister = prefs.addChangeListener { changedKey ->
+            if (changedKey == key) state.value = prefs.getStringSet(key)
+        }
+        onDispose(unregister)
+    }
+    return state
+}

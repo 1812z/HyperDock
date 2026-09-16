@@ -23,13 +23,16 @@ object PrefKeys {
 
     // 侧边栏
     const val SIDEBAR_EXPAND_ALL_APPS = "sidebar_expand_all_apps"
-    const val SIDEBAR_HIDE_ALL_APPS_BUTTON = "sidebar_hide_all_apps_button"
+
+    // 快捷方式
+    const val SHORTCUTS_ENABLED = "shortcuts_enabled"
+    const val SHORTCUTS_ADDED = "shortcuts_added"
 
     const val CONFIG_APP_VERSION = "config_app_version"
     const val CONFIG_SCHEMA_VERSION = "config_schema_version"
 
     /** 需要放入 core 组、供 Hook 进程最先读取的键。 */
-    val CORE = setOf(DEBUG_LOG, SIDEBAR_EXPAND_ALL_APPS, SIDEBAR_HIDE_ALL_APPS_BUTTON)
+    val CORE = setOf(DEBUG_LOG, SIDEBAR_EXPAND_ALL_APPS)
 
     /** 需要同步到 Hook 进程、并参与导入导出的业务配置键。 */
     val SYNCED = setOf(
@@ -44,6 +47,7 @@ object PrefKeys {
         BLUR_BARS,
         PREDICTIVE_BACK_MAX_TRANSLATION,
         SIDEBAR_EXPAND_ALL_APPS,
-        SIDEBAR_HIDE_ALL_APPS_BUTTON,
+        SHORTCUTS_ENABLED,
+        SHORTCUTS_ADDED,
     )
 }

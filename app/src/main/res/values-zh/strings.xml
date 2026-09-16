@@ -27,8 +27,27 @@
     <string name="sidebar_behavior">行为</string>
     <string name="sidebar_expand_all_apps">默认展开全部应用</string>
     <string name="sidebar_expand_all_apps_summary">侧边栏滑出时即显示全部应用面板，并与侧边栏整体一起动画</string>
-    <string name="sidebar_hide_all_apps_button">隐藏全部应用按钮</string>
-    <string name="sidebar_hide_all_apps_button_summary">移除底部用于展开/收起全部应用的按钮，并回收其占用的空间</string>
+
+    <string name="shortcuts">快捷方式</string>
+    <string name="shortcuts_summary">在全部应用面板与侧边栏展示自定义快捷方式</string>
+    <string name="shortcuts_added">已添加</string>
+    <string name="shortcuts_not_added">未添加</string>
+    <string name="shortcut_owner_system">系统应用</string>
+    <string name="shortcut_screen_record">录屏</string>
+    <string name="shortcut_screenshot">截图</string>
+    <string name="shortcut_wifi">WLAN</string>
+    <string name="shortcut_bluetooth">蓝牙</string>
+    <string name="shortcut_flashlight">手电筒</string>
+    <string name="shortcut_airplane_mode">飞行模式</string>
+    <string name="shortcut_mobile_data">移动数据</string>
+    <string name="shortcut_location">定位</string>
+    <string name="shortcut_auto_rotate">自动旋转</string>
+    <string name="shortcut_dnd">勿扰模式</string>
+    <string name="shortcut_dark_mode">深色模式</string>
+    <string name="shortcut_hotspot">个人热点</string>
+    <string name="shortcut_cast">投屏</string>
+    <string name="shortcut_mute">静音</string>
+    <string name="shortcut_alarm">闹钟</string>
 
     <string name="misc">杂项</string>
     <string name="hide_desktop_icon">隐藏桌面图标</string>

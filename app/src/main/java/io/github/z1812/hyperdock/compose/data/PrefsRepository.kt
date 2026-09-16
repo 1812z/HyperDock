@@ -45,6 +45,14 @@ class PrefsRepository(context: Context) {
         prefs.edit().putInt(key, value).apply()
     }
 
+    fun getStringSet(key: String): Set<String> =
+        runCatching { prefs.getStringSet(key, emptySet())?.toSet() ?: emptySet() }
+            .getOrDefault(emptySet())
+
+    fun putStringSet(key: String, value: Set<String>) {
+        prefs.edit().putStringSet(key, value).apply()
+    }
+
     fun getDouble(key: String, default: Double): Double =
         runCatching { prefs.getFloat(key, default.toFloat()).toDouble() }.getOrDefault(default)
 

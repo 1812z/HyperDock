@@ -63,6 +63,7 @@ import io.github.z1812.hyperdock.compose.page.home.rememberHomeOverviewState
 import io.github.z1812.hyperdock.compose.page.settings.BackupRestorePage
 import io.github.z1812.hyperdock.compose.page.settings.MiscPage
 import io.github.z1812.hyperdock.compose.page.settings.SidebarBehaviorPage
+import io.github.z1812.hyperdock.compose.page.settings.ShortcutPage
 import io.github.z1812.hyperdock.compose.page.settings.ThemeSettingsPage
 import io.github.z1812.hyperdock.compose.service.UpdateService
 import io.github.z1812.hyperdock.compose.theme.DEFAULT_PREDICTIVE_BACK_TRANSLATION_PERCENT
@@ -320,6 +321,7 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
                                 SettingsDetail.Sidebar,
                                 SettingsDetail.SidebarBehavior,
                                 null -> SidebarBehaviorPage(prefs, ::closeDetail)
+                                SettingsDetail.Shortcuts -> ShortcutPage(prefs, ::closeDetail)
                                 SettingsDetail.Theme -> ThemeSettingsPage(prefs, ::closeDetail)
                                 SettingsDetail.Misc -> MiscPage(prefs, ::closeDetail)
                                 SettingsDetail.BackupRestore -> BackupRestorePage(::closeDetail)

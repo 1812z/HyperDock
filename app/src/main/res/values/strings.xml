@@ -29,8 +29,28 @@
     <string name="sidebar_behavior">Behavior</string>
     <string name="sidebar_expand_all_apps">Expand all apps by default</string>
     <string name="sidebar_expand_all_apps_summary">Show the all-apps panel as soon as the sidebar opens, animated together with the sidebar itself</string>
-    <string name="sidebar_hide_all_apps_button">Hide all-apps button</string>
-    <string name="sidebar_hide_all_apps_button_summary">Remove the bottom button that expands or collapses all apps, and reclaim its reserved space</string>
+
+    <!-- Shortcuts -->
+    <string name="shortcuts">Shortcuts</string>
+    <string name="shortcuts_summary">Show custom shortcuts in the all-apps panel and dock</string>
+    <string name="shortcuts_added">Added</string>
+    <string name="shortcuts_not_added">Not added</string>
+    <string name="shortcut_owner_system">System apps</string>
+    <string name="shortcut_screen_record">Screen recording</string>
+    <string name="shortcut_screenshot">Screenshot</string>
+    <string name="shortcut_wifi">WLAN</string>
+    <string name="shortcut_bluetooth">Bluetooth</string>
+    <string name="shortcut_flashlight">Flashlight</string>
+    <string name="shortcut_airplane_mode">Airplane mode</string>
+    <string name="shortcut_mobile_data">Mobile data</string>
+    <string name="shortcut_location">Location</string>
+    <string name="shortcut_auto_rotate">Auto-rotate</string>
+    <string name="shortcut_dnd">Do not disturb</string>
+    <string name="shortcut_dark_mode">Dark mode</string>
+    <string name="shortcut_hotspot">Hotspot</string>
+    <string name="shortcut_cast">Cast</string>
+    <string name="shortcut_mute">Mute</string>
+    <string name="shortcut_alarm">Alarm</string>
 
     <!-- Misc -->
     <string name="misc">Misc</string>

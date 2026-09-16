@@ -21,10 +21,12 @@ import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.icon.extended.Sidebar
 import top.yukonga.miuix.kmp.icon.extended.Theme
 import top.yukonga.miuix.kmp.icon.extended.Translate
+import top.yukonga.miuix.kmp.icon.extended.Tune
 
 internal enum class SettingsDetail {
     Sidebar,
     SidebarBehavior,
+    Shortcuts,
     Theme,
     Misc,
     BackupRestore,
@@ -46,6 +48,14 @@ internal fun SettingsPage(
             Card(modifier = Modifier.fillMaxWidth()) {
                 SettingsActionWithArrow(stringResource(R.string.sidebar_behavior), MiuixIcons.Sidebar) {
                     onOpenDetail(SettingsDetail.SidebarBehavior)
+                }
+            }
+        }
+        item {
+            SectionTitle(stringResource(R.string.shortcuts))
+            Card(modifier = Modifier.fillMaxWidth()) {
+                SettingsActionWithArrow(stringResource(R.string.shortcuts), MiuixIcons.Tune) {
+                    onOpenDetail(SettingsDetail.Shortcuts)
                 }
             }
         }
