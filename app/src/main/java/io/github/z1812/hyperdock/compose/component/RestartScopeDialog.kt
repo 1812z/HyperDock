@@ -48,6 +48,11 @@ internal val RestartScopeTargets = listOf(
         label = R.string.security_center,
         command = "am force-stop com.miui.securitycenter",
     ),
+    RestartScopeTarget(
+        packageName = "com.android.systemui",
+        label = R.string.system_ui,
+        command = "am force-stop com.android.systemui",
+    ),
 )
 
 /**

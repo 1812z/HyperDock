@@ -57,6 +57,7 @@ object SidebarDefaultExpandHook : BaseHook() {
 
         installHook(module, "TurboLayout.a0") { hookExpandedCreate(module, turboLayout) }
         installHook(module, "TurboLayout.c0") { hookCreate(module, turboLayout) }
+        installHook(module, "TurboLayout.R retain all apps") { hookReleaseRetain(module, turboLayout) }
 
         val appsAddHelper = runCatching { Class.forName(APPS_ADD_HELPER, false, classLoader) }.getOrNull()
         if (appsAddHelper == null) {
@@ -117,6 +118,42 @@ object SidebarDefaultExpandHook : BaseHook() {
     }
 
     /**
+     * JADX 已确认 R() 是每次侧边栏重建时释放 AllApps 的位置：它调用
+     * C5799w.m19041P() 后把 f20693p 置空，导致下一次 W() new 一个面板。
+     * 临时把字段置空再执行原方法，可让 R() 完成状态复位但跳过释放分支，
+     * 随后恢复原面板引用。W() 会重新挂载同一个 View，避免重新解析 300 个应用。
+     */
+    private fun hookReleaseRetain(module: XposedModule, turboLayout: Class<*>) {
+        val method = findNoArgVoid(turboLayout, "R") ?: run {
+            logWarn(module, "TurboLayout.R() unavailable")
+            return
+        }
+        val panelField = turboLayout.declaredFields.firstOrNull { field ->
+            field.type.name == "com.miui.dock.allapps.w" ||
+                field.type.name == "com.miui.dock.allapps.C5799w"
+        } ?: run {
+            logWarn(module, "TurboLayout all apps field unavailable")
+            return
+        }
+        panelField.isAccessible = true
+        method.isAccessible = true
+        module.hook(method).intercept { chain ->
+            if (!ConfigManager.getBoolean(PREF_ENABLED, false)) return@intercept chain.proceed()
+            val panel = runCatching { panelField.get(chain.thisObject) }.getOrNull()
+            if (panel == null) return@intercept chain.proceed()
+            panelField.set(chain.thisObject, null)
+            try {
+                chain.proceed()
+            } finally {
+                // R() 已将 f20694q 复位为 false，W() 随后会复用并重新挂载该 View。
+                runCatching { panelField.set(chain.thisObject, panel) }
+            }
+            null
+        }
+        log(module, "hooking ${turboLayout.name}.${method.name} to retain AllApps panel")
+    }
+
+    /**
      * 拦截全部应用面板的加入动作。静默模式下直接以终态加入，
      * 保留原生 `W()` 计算出的布局参数与层级。
      */
@@ -174,7 +211,6 @@ object SidebarDefaultExpandHook : BaseHook() {
      */
     private fun expandAllApps(turbo: Any?) {
         val target = turbo ?: return
-        if (invokeNoArg(target, "getAppsLayout") != null) return
         val dockLayout = invokeNoArg(target, "getDockLayout") ?: return
         if (!isNormalDock(target)) return
         val open = findNoArgVoid(target.javaClass, "W") ?: return

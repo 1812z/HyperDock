@@ -113,6 +113,7 @@
     <string name="restart_scope_summary">Select the scoped app to restart via root</string>
     <string name="restart_root_required">Please check if ROOT permission has been granted to this app</string>
     <string name="security_center">Security Center</string>
+    <string name="system_ui">System UI</string>
 
     <!-- Backup & restore -->
     <string name="backup_restore">Backup &amp; restore</string>

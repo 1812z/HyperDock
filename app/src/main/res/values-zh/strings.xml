@@ -105,6 +105,7 @@
     <string name="restart_scope_summary">选择需要通过 root 重启的作用域应用</string>
     <string name="restart_root_required">请检查是否已授予本应用 ROOT 权限</string>
     <string name="security_center">安全中心</string>
+    <string name="system_ui">系统界面</string>
 
     <string name="backup_restore">备份与恢复</string>
     <string name="config">配置</string>
