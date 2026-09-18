@@ -317,7 +317,8 @@ internal object SidebarShortcutController {
         shortcutClickMethod?.let { m ->
             try {
                 module.hook(m).intercept { chain ->
-                    val directModel = runCatching { shortcutModelField?.get(chain.thisObject) }.getOrNull()
+                    Log.d(TAG, "shortcut click hook entered method=${m.name}")
+                    val directModel = findShortcutModel(chain.thisObject)
                     val directQuickInfo = directModel?.let(::quickInfoFromModel)
                     if (directModel != null && directQuickInfo != null &&
                         quickInfoId(directQuickInfo).startsWith(ID_PREFIX)) {
@@ -986,6 +987,9 @@ internal object SidebarShortcutController {
 
     private fun resolveShortcut(id: String): ShortcutTarget? {
         SYSTEM_LABELS[id]?.let { (zh, en) ->
+            // HyperIsland 条目与其他系统磁贴保持完全相同的 QuickInfo 形态
+            // （NATIVE + 空组件）：点击由注入的监听器消费，绝不依赖原生分发，
+            // 否则不同 MIUI 构建会因 type 差异走未 hook 的路径导致点击无响应。
             val icon = if (id.startsWith("hyperisland_")) {
                 "android.resource://io.github.z1812.hyperdock/drawable/ic_focus_ticker_screen_recorder"
             } else null
@@ -1165,11 +1169,23 @@ internal object SidebarShortcutController {
             }?.invoke(holder) as? View
         }.getOrNull() ?: findItemView(holder) ?: return
         val context = itemView.context
+        Log.i(TAG, "install click listener holder=${holder.javaClass.name} id=${quickInfoFromModel(model)?.let(::quickInfoId)}")
         bindInjectedIcon(holder, model)
-        itemView.setOnClickListener {
+        val click = View.OnClickListener {
+            Log.i(TAG, "direct shortcut view clicked")
             handleInjectedModelClick(model, context)
             bindInjectedIcon(holder, model)
         }
+        // MIUI builds differ on whether the holder, its card, or the icon owns
+        // the click listener. Bind all views in this injected card so custom
+        // HyperIsland entries cannot be swallowed by a child view.
+        fun bind(view: View) {
+            view.setOnClickListener(click)
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) bind(view.getChildAt(index))
+            }
+        }
+        bind(itemView)
     }
 
     private fun findItemView(holder: Any): View? {
@@ -1470,7 +1486,11 @@ internal object SidebarShortcutController {
         val quickInfo = quickInfoFromModel(model) ?: return false
         val id = normalizeComponentId(quickInfoId(quickInfo).removePrefix(ID_PREFIX))
         if (id == "hyperisland_motion_photo" || id == "hyperisland_screen_record") {
-            HyperIslandScreenRecorderClient.start(context, id == "hyperisland_motion_photo")
+            Log.i(TAG, "HyperIsland shortcut clicked: $id context=${context.packageName}")
+            runCatching { ConfigManager.module()?.log(Log.INFO, TAG, "HyperIsland shortcut clicked: $id") }
+            // 客户端内部已捕获常规失败；外层再兜底，避免异常击穿安全中心进程。
+            runCatching { HyperIslandScreenRecorderClient.start(context, id == "hyperisland_motion_photo") }
+                .onFailure { Log.e(TAG, "HyperIsland dispatch failed", it) }
             return true
         }
         if (toggleableTiles.contains(id)) {
@@ -1506,6 +1526,7 @@ internal object SidebarShortcutController {
 
     private fun sendQsBridgeClick(context: android.content.Context, component: String?, spec: String?) {
         if (component == null && spec == null) return
+        Log.i(TAG, "dispatch QS click component=$component spec=$spec")
         context.sendBroadcast(
             Intent(SidebarQsBridgeHook.ACTION_CLICK)
                 .setPackage("com.android.systemui")
