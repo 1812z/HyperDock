@@ -44,7 +44,6 @@ object SidebarDefaultExpandHook : BaseHook() {
     private val retainedPanelFields = Collections.synchronizedMap(WeakHashMap<Class<*>, Field>())
     private val retentionHooked = Collections.synchronizedSet(HashSet<Method>())
     private val cleanupMethods = Collections.synchronizedSet(HashSet<Method>())
-    @Volatile private var discoveredClasses: List<Class<*>>? = null
 
     override fun getTag() = TAG
 
@@ -64,16 +63,27 @@ object SidebarDefaultExpandHook : BaseHook() {
         openMethod.isAccessible = true
         log(module, "hooking normal sidebar ${openMethod.declaringClass.name}.${openMethod.name}")
         hookWrapperPreload(module, openMethod.parameterTypes[0])
+        // The wrapper open callback is too late for a synchronized reveal. Hook
+        // TurboLayout's own creation callbacks as the primary expansion point.
+        findTurboLayout(classLoader)?.let { turboClass ->
+            hookExpandedCreate(module, turboClass)
+            hookCreate(module, turboClass)
+        } ?: logWarn(module, "TurboLayout unavailable; using wrapper fallback")
+        hookPanelReleaseWithDexKit(module, classLoader, openMethod.parameterTypes[0])
         module.hook(openMethod).intercept { chain ->
             val opening = chain.args.getOrNull(1) as? Boolean ?: false
+            if (opening && ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)) {
+                chain.args.firstOrNull()?.let { findRootView(it)?.visibility = View.VISIBLE }
+            }
             val result = chain.proceed()
             if (opening && ConfigManager.getBoolean(PREF_ENABLED, false)) {
                 val wrapper = chain.args.firstOrNull() ?: return@intercept result
-                findRootView(wrapper)?.post {
-                    findPanelLayout(wrapper)?.let {
-                        preparePanelHooks(module, it)
-                        expandAllApps(it)
-                    }
+                // Fallback for builds without a discoverable Turbo callback.
+                // Run inline so panel creation and sidebar opening share the
+                // same main-thread transaction; never enqueue a later post.
+                findPanelLayout(wrapper)?.let {
+                    preparePanelHooks(module, it)
+                    expandAllApps(it)
                 }
             }
             result
@@ -172,7 +182,7 @@ object SidebarDefaultExpandHook : BaseHook() {
 
     /** Hook `TurboLayout.a0(int x6)`：带尺寸参数的侧边栏创建入口。 */
     private fun hookExpandedCreate(module: XposedModule, turboLayout: Class<*>) {
-        val method = findSixIntVoid(turboLayout) ?: run {
+        val method = SidebarExpandMethodDiscovery.sixIntVoid(turboLayout) ?: run {
             logWarn(module, "TurboLayout.a0(int x6) unavailable")
             return
         }
@@ -180,6 +190,7 @@ object SidebarDefaultExpandHook : BaseHook() {
         method.isAccessible = true
         module.hook(method).intercept { chain ->
             val result = chain.proceed()
+            preparePanelHooks(module, chain.thisObject)
             runCatching { expandAllAppsIfEnabled(chain.thisObject) }
                 .onFailure { logError(module, "expand after a0 failed: ${it.message}") }
             result
@@ -188,7 +199,7 @@ object SidebarDefaultExpandHook : BaseHook() {
 
     /** Hook `TurboLayout.c0()`：无参数的侧边栏创建入口。 */
     private fun hookCreate(module: XposedModule, turboLayout: Class<*>) {
-        val method = findCreateMethod(turboLayout) ?: run {
+        val method = SidebarExpandMethodDiscovery.create(turboLayout) ?: run {
             logWarn(module, "TurboLayout.c0() unavailable")
             return
         }
@@ -196,6 +207,7 @@ object SidebarDefaultExpandHook : BaseHook() {
         method.isAccessible = true
         module.hook(method).intercept { chain ->
             val result = chain.proceed()
+            preparePanelHooks(module, chain.thisObject)
             runCatching { expandAllAppsIfEnabled(chain.thisObject) }
                 .onFailure { logError(module, "expand after c0 failed: ${it.message}") }
             result
@@ -220,21 +232,19 @@ object SidebarDefaultExpandHook : BaseHook() {
         method.isAccessible = true
         module.hook(method).intercept { chain ->
             if (!silentAdd.get()) return@intercept chain.proceed()
-            val parent = chain.args.getOrNull(0) as? ViewGroup ?: return@intercept chain.proceed()
+            chain.args.getOrNull(0) as? ViewGroup ?: return@intercept chain.proceed()
             val view = chain.args.getOrNull(1) as? View ?: return@intercept chain.proceed()
-            val params = chain.args.getOrNull(2) as? ViewGroup.LayoutParams
-                ?: return@intercept chain.proceed()
-            applySilentAdd(parent, view, params)
-            null
+            // Let the native helper finish binding/registration first. Bypassing
+            // it and calling addView directly creates an empty shell panel.
+            val result = chain.proceed()
+            applySilentVisual(view)
+            result
         }
     }
 
-    /** 以终态加入全部应用面板：无入场动画、无位移缩放，直接可见。 */
-    private fun applySilentAdd(parent: ViewGroup, view: View, params: ViewGroup.LayoutParams) {
-        (view.parent as? ViewGroup)?.removeView(view)
-        view.removeCallbacks(null)
+    /** 原生加入完成后清除入场动画，保留其绑定和层级初始化。 */
+    private fun applySilentVisual(view: View) {
         view.animate().cancel()
-        parent.addView(view, params)
         view.alpha = 1f
         view.scaleX = 1f
         view.scaleY = 1f
@@ -262,31 +272,51 @@ object SidebarDefaultExpandHook : BaseHook() {
     private fun expandAllApps(turbo: Any?) {
         val target = turbo ?: return
         val dockLayout = findDockLayout(target) ?: return
-        if (!isNormalDock(target)) return
+        // The target class was already resolved from the sidebar package and
+        // matched TurboLayout's creation signature, so a second heuristic
+        // wrapper check can only reject valid builds.
+        // Once created, never invoke the native toggle/create methods again.
+        // Some releases expose collapse as a public no-arg method, which made
+        // the old candidate loop hide the panel on the second open.
+        val panelField = findPanelField(target)
+        val existingPanel = runCatching {
+            panelField?.isAccessible = true
+            panelField?.get(target) as? View
+        }.getOrNull()
+        if (existingPanel != null) {
+            restorePanelVisibility(existingPanel)
+            return
+        }
         val previous = silentAdd.get()
         silentAdd.set(true)
         try {
-            invokeExpansionCandidates(target)
+            invokeExpansionCandidates(target, panelField)
         } finally {
             silentAdd.set(previous)
         }
-        dockLayout.javaClass.methods.firstOrNull {
-            it.returnType == Void.TYPE && it.parameterCount == 1 &&
-                it.parameterTypes[0] == Boolean::class.javaPrimitiveType
-        }?.let { setter -> runCatching { setter.invoke(dockLayout, true) } }
     }
 
-    private fun invokeExpansionCandidates(target: Any) {
-        val methods = target.javaClass.declaredMethods.filter {
-            it.returnType == Void.TYPE && it.parameterCount == 0 &&
-                Modifier.isPublic(it.modifiers) && !it.isSynthetic
+    private fun findPanelField(target: Any): Field? {
+        return target.javaClass.declaredFields.firstOrNull { field ->
+            ViewGroup::class.java.isAssignableFrom(field.type) &&
+                field.type.declaredMethods.any { method ->
+                    method.parameterCount == 0 && method.returnType == target.javaClass
+                }
         }
-        val panelField = target.javaClass.declaredFields.firstOrNull { field ->
-            ViewGroup::class.java.isAssignableFrom(field.type) && runCatching {
-                field.isAccessible = true
-                field.get(target) == null
-            }.getOrDefault(false)
-        }
+    }
+
+    private fun restorePanelVisibility(panel: View) {
+        panel.animate().cancel()
+        panel.alpha = 1f
+        panel.scaleX = 1f
+        panel.scaleY = 1f
+        panel.translationX = 0f
+        panel.translationY = 0f
+        panel.visibility = View.VISIBLE
+    }
+
+    private fun invokeExpansionCandidates(target: Any, panelField: Field?) {
+        val methods = listOfNotNull(SidebarExpandMethodDiscovery.expansion(target.javaClass))
         for (method in methods) {
             val before = runCatching { panelField?.get(target) }.getOrNull()
             runCatching { method.isAccessible = true; method.invoke(target) }
@@ -335,7 +365,7 @@ object SidebarDefaultExpandHook : BaseHook() {
     }
 
     private fun findSidebarOpenMethod(loader: ClassLoader): Method? {
-        return discoverClasses(loader).asSequence().flatMap { type ->
+        return SidebarExpandDexDiscovery.find(loader).asSequence().flatMap { type ->
             runCatching { type.declaredMethods.asSequence() }.getOrDefault(emptySequence())
         }.firstOrNull { method ->
             val p = method.parameterTypes
@@ -347,7 +377,7 @@ object SidebarDefaultExpandHook : BaseHook() {
     }
 
     private fun findSidebarRemoveMethod(loader: ClassLoader): Method? {
-        return discoverClasses(loader).asSequence().flatMap { type ->
+        return SidebarExpandDexDiscovery.find(loader).asSequence().flatMap { type ->
             runCatching { type.declaredMethods.asSequence() }.getOrDefault(emptySequence())
         }.firstOrNull { method ->
             val p = method.parameterTypes
@@ -357,95 +387,100 @@ object SidebarDefaultExpandHook : BaseHook() {
         }
     }
 
+    /** Find the panel-release method by its invoke graph, never by its R8 name. */
+    private fun hookPanelReleaseWithDexKit(module: XposedModule, loader: ClassLoader, wrapperClass: Class<*>) {
+        runCatching {
+            val turboClass = wrapperClass.declaredFields.map { it.type }.firstOrNull { type ->
+                ViewGroup::class.java.isAssignableFrom(type) && type.declaredMethods.any { method ->
+                    method.returnType == Void.TYPE && method.parameterCount == 6 &&
+                        method.parameterTypes.all { it == Int::class.javaPrimitiveType }
+                }
+            } ?: run {
+                logWarn(module, "DexKit panel release: Turbo layout class unavailable")
+                return
+            }
+            val panelField = turboClass.declaredFields.firstOrNull { field ->
+                ViewGroup::class.java.isAssignableFrom(field.type) &&
+                    field.type.declaredMethods.any { it.parameterCount == 0 && it.returnType == wrapperClass }
+            } ?: run {
+                logWarn(module, "DexKit panel release: AllApps field unavailable")
+                return
+            }
+            val releases = System.loadLibrary("dexkit").let {
+                DexKitBridge.create(loader, false).use { bridge ->
+                    bridge.getClassData(turboClass)?.findMethod {
+                        matcher {
+                            returnType("void")
+                            paramTypes()
+                            invokeMethods {
+                                add {
+                                    declaredClass(panelField.type.name)
+                                    returnType("void")
+                                    paramTypes()
+                                }
+                            }
+                        }
+                    }?.mapNotNull { data ->
+                        runCatching { data.getMethodInstance(loader) }.getOrNull()
+                    }?.filter { method ->
+                        // The private Turbo cleanup routine is the only safe point to
+                        // preserve the panel. Lifecycle callbacks also call panel methods
+                        // during normal transitions and must remain untouched.
+                        Modifier.isPrivate(method.modifiers) && !method.isSynthetic
+                    } ?: emptyList()
+                }
+            }
+            if (releases.isEmpty()) {
+                logWarn(module, "DexKit panel release: cleanup method unavailable")
+                return
+            }
+            panelField.isAccessible = true
+            releases.forEach { release ->
+                release.isAccessible = true
+                module.hook(release).intercept { chain ->
+                    val cacheEnabled = ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)
+                    if (!cacheEnabled) {
+                        return@intercept chain.proceed()
+                    }
+                    val panel = panelField.get(chain.thisObject)
+                    log(module, "panel release intercepted cacheEnabled=true panelFound=${panel != null}")
+                    if (panel == null) return@intercept chain.proceed()
+                    // Keep the native panel and its ViewModel/adapter alive.
+                    // Running the release body removes the View from the hierarchy,
+                    // and restoring only the field leaves a dead panel on next open.
+                    return@intercept null
+                }
+            }
+            log(module, "hooking ${releases.size} panel release methods by DexKit invoke graph")
+        }.onFailure { logWarn(module, "DexKit panel release match failed: ${it.message}") }
+    }
+
     private fun invokeNoArg(target: Any, vararg names: String): Any? {
-        val method = findNoArg(target.javaClass, *names) ?: return null
+        val method = SidebarExpandMethodDiscovery.noArg(target.javaClass, *names) ?: return null
         method.isAccessible = true
         return runCatching { method.invoke(target) }.getOrNull()
     }
-
-    private fun findNoArg(clazz: Class<*>, vararg names: String): Method? {
-        names.forEach { name ->
-            runCatching { clazz.getDeclaredMethod(name) }.getOrNull()?.let { return it }
-        }
-        return null
-    }
-
-    private fun findNoArgVoid(clazz: Class<*>, vararg names: String): Method? =
-        findNoArg(clazz, *names)?.takeIf { it.returnType == Void.TYPE }
-
-    private fun findExpansionMethod(clazz: Class<*>): Method? {
-        val methods = clazz.declaredMethods.filter {
-            it.returnType == Void.TYPE && it.parameterCount == 0 &&
-                Modifier.isPublic(it.modifiers) && !it.isSynthetic && it.name.length <= 2
-        }
-        // The expansion entry is the no-arg state-transition method. Prefer a
-        // candidate declared after the cleanup/create methods; this ordering is
-        // stable in dex output while remaining independent of its obfuscated name.
-        return methods.lastOrNull()
-    }
-
-    private fun findSixIntVoid(clazz: Class<*>): Method? =
-        clazz.declaredMethods.firstOrNull { candidate ->
-            candidate.returnType == Void.TYPE &&
-                candidate.parameterCount == 6 &&
-                candidate.parameterTypes.all { it == Int::class.javaPrimitiveType }
-        }
 
     /**
      * Resolve obfuscated SecurityCenter classes from dex metadata.  The package is
      * stable across HyperOS releases, while class/method names are not.
      */
     private fun findTurboLayout(loader: ClassLoader): Class<*>? {
-        return discoverClasses(loader).firstOrNull { type ->
+        return SidebarExpandDexDiscovery.find(loader).firstOrNull { type ->
             runCatching {
                 ViewGroup::class.java.isAssignableFrom(type) &&
-                    findSixIntVoid(type) != null &&
-                    findCreateMethod(type) != null
+                    SidebarExpandMethodDiscovery.sixIntVoid(type) != null &&
+                    SidebarExpandMethodDiscovery.create(type) != null
             }.getOrDefault(false)
         }
     }
 
     private fun findAppsAddHelper(loader: ClassLoader): Class<*>? {
-        return discoverClasses(loader).firstOrNull { type ->
+        return SidebarExpandDexDiscovery.find(loader).firstOrNull { type ->
             runCatching {
-                type.declaredMethods.any { method ->
-                    method.parameterCount == 3 &&
-                        ViewGroup::class.java.isAssignableFrom(method.parameterTypes[0]) &&
-                        View::class.java.isAssignableFrom(method.parameterTypes[1]) &&
-                        ViewGroup.LayoutParams::class.java.isAssignableFrom(method.parameterTypes[2])
-                }
+                    SidebarExpandMethodDiscovery.appAddHelper(type)
             }.getOrDefault(false)
         }
     }
 
-    /** Prefer the known name, then use the least ambiguous void/no-arg candidate. */
-    private fun findCreateMethod(clazz: Class<*>): Method? {
-        val candidates = clazz.declaredMethods.filter {
-            it.returnType == Void.TYPE && it.parameterCount == 0 &&
-                Modifier.isPublic(it.modifiers) && !it.isSynthetic
-        }
-        return candidates.firstOrNull { it.name.length <= 2 }
-    }
-
-    /** DexKit metadata discovery, restricted to the SecurityCenter newbox package. */
-    private fun discoverClasses(loader: ClassLoader): List<Class<*>> {
-        discoveredClasses?.let { return it }
-        val result = runCatching {
-            System.loadLibrary("dexkit")
-            DexKitBridge.create(loader, false).use { bridge ->
-                (bridge.findClass { searchPackages("com.miui.dock.sidebar") } +
-                    bridge.findClass { searchPackages("xb") }).distinctBy { it.name }
-                    .mapNotNull { data ->
-                        runCatching {
-                            data.getInstance(loader).also { type ->
-                                type.declaredMethods
-                                type.declaredFields
-                            }
-                        }.getOrNull()
-                    }
-            }
-        }.getOrElse { emptyList() }
-        discoveredClasses = result
-        return result
-    }
 }
