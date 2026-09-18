@@ -85,7 +85,6 @@
     <string name="shortcut_hyperisland_motion_photo">Live recording</string>
     <string name="shortcut_hyperisland_screen_record">Screen recording</string>
     <string name="shortcut_hyperisland_requirement">Using this shortcut requires installing and enabling the Screen Recording Island feature in HyperIsland.</string>
-    <string name="shortcut_screen_record">Screen recording</string>
     <string name="shortcut_screenshot">Screenshot</string>
     <string name="shortcut_wifi">WLAN</string>
     <string name="shortcut_bluetooth">Bluetooth</string>
@@ -99,7 +98,6 @@
     <string name="shortcut_hotspot">Hotspot</string>
     <string name="shortcut_cast">Cast</string>
     <string name="shortcut_mute">Mute</string>
-    <string name="shortcut_alarm">Alarm</string>
 
     <!-- Misc -->
     <string name="misc">Misc</string>

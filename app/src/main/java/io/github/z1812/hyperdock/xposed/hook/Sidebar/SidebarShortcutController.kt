@@ -1292,7 +1292,6 @@ internal object SidebarShortcutController {
             "hotspot" -> "stat_sys_tether_wifi"
             "cast" -> "ic_menu_slideshow"
             "dark_mode" -> "ic_menu_day"
-            "screen_record" -> "ic_menu_camera"
             "screenshot" -> "ic_menu_crop"
             else -> null
         } ?: return null
@@ -1548,7 +1547,6 @@ internal object SidebarShortcutController {
         "hotspot" -> "hotspot"
         "cast" -> "cast"
         "mute" -> "sound"
-        "screen_record" -> "screenrecord"
         "screenshot" -> "screenshot"
         else -> null
     }

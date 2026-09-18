@@ -82,7 +82,6 @@
     <string name="shortcut_hyperisland_motion_photo">实况录制</string>
     <string name="shortcut_hyperisland_screen_record">屏幕录制</string>
     <string name="shortcut_hyperisland_requirement">使用此快捷方式需要安装并启用 HyperIsland 中的录屏岛功能</string>
-    <string name="shortcut_screen_record">录屏</string>
     <string name="shortcut_screenshot">截图</string>
     <string name="shortcut_wifi">WLAN</string>
     <string name="shortcut_bluetooth">蓝牙</string>
@@ -96,7 +95,6 @@
     <string name="shortcut_hotspot">个人热点</string>
     <string name="shortcut_cast">投屏</string>
     <string name="shortcut_mute">静音</string>
-    <string name="shortcut_alarm">闹钟</string>
 
     <string name="misc">杂项</string>
     <string name="hide_desktop_icon">隐藏桌面图标</string>

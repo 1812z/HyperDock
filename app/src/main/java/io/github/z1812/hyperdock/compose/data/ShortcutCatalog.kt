@@ -10,10 +10,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.annotation.DrawableRes
 import io.github.z1812.hyperdock.R
 import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Alarm
 import top.yukonga.miuix.kmp.icon.extended.Carrier
 import top.yukonga.miuix.kmp.icon.extended.Location
-import top.yukonga.miuix.kmp.icon.extended.Recording
 import top.yukonga.miuix.kmp.icon.extended.RotateLeft
 import top.yukonga.miuix.kmp.icon.extended.ScreenCapture
 import top.yukonga.miuix.kmp.icon.extended.ScreenMirroring
@@ -47,7 +45,6 @@ object ShortcutCatalog {
     )
 
     private val SYSTEM_ENTRIES = listOf(
-        SystemEntry("screen_record", R.string.shortcut_screen_record, MiuixIcons.Recording),
         SystemEntry("screenshot", R.string.shortcut_screenshot, MiuixIcons.ScreenCapture),
         SystemEntry("wifi", R.string.shortcut_wifi, null),
         SystemEntry("bluetooth", R.string.shortcut_bluetooth, null),
@@ -61,7 +58,6 @@ object ShortcutCatalog {
         SystemEntry("hotspot", R.string.shortcut_hotspot, null),
         SystemEntry("cast", R.string.shortcut_cast, MiuixIcons.ScreenMirroring),
         SystemEntry("mute", R.string.shortcut_mute, MiuixIcons.VolumeOff),
-        SystemEntry("alarm", R.string.shortcut_alarm, MiuixIcons.Alarm),
     )
 
     private val HYPER_ISLAND_ENTRIES = listOf(
