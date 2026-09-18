@@ -26,7 +26,7 @@ object ConfigManager {
     private val changeListeners = mutableListOf<() -> Unit>()
 
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        module?.log("$TAG: prefs changed: key=$key")
+        //module?.log("$TAG: prefs changed: key=$key")
         notifyListeners()
     }
 
@@ -125,7 +125,7 @@ object ConfigManager {
                 m.getRemotePreferences("$PREFS_SHARD_PREFIX$index").also { prefs ->
                     prefs.registerOnSharedPreferenceChangeListener(prefsListener)
                     shardPrefs[index] = prefs
-                    m.log("$TAG: remote prefs '$PREFS_SHARD_PREFIX$index' loaded")
+                    //m.log("$TAG: remote prefs '$PREFS_SHARD_PREFIX$index' loaded")
                 }
             } catch (e: Throwable) {
                 m.logError("$TAG: shard $index load failed: ${e.message}")
