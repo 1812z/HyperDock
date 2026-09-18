@@ -40,6 +40,10 @@ object SidebarDefaultExpandHook : BaseHook() {
 
     /** 仅在“静默加入全部应用面板”期间为 true，用于跳过原生入场动画。 */
     private val silentAdd = AtomicBoolean(false)
+    /** Native expansion itself calls the same release routine as close. */
+    private val autoExpanding = AtomicBoolean(false)
+    private val sidebarOpen = AtomicBoolean(false)
+    private val releaseTraces = Collections.synchronizedSet(HashSet<Method>())
     private val silentHookInstalled = AtomicBoolean(false)
     private val retainedPanelFields = Collections.synchronizedMap(WeakHashMap<Class<*>, Field>())
     private val retentionHooked = Collections.synchronizedSet(HashSet<Method>())
@@ -63,27 +67,24 @@ object SidebarDefaultExpandHook : BaseHook() {
         openMethod.isAccessible = true
         log(module, "hooking normal sidebar ${openMethod.declaringClass.name}.${openMethod.name}")
         hookWrapperPreload(module, openMethod.parameterTypes[0])
-        // The wrapper open callback is too late for a synchronized reveal. Hook
-        // TurboLayout's own creation callbacks as the primary expansion point.
-        findTurboLayout(classLoader)?.let { turboClass ->
-            hookExpandedCreate(module, turboClass)
-            hookCreate(module, turboClass)
-        } ?: logWarn(module, "TurboLayout unavailable; using wrapper fallback")
         hookPanelReleaseWithDexKit(module, classLoader, openMethod.parameterTypes[0])
         module.hook(openMethod).intercept { chain ->
             val opening = chain.args.getOrNull(1) as? Boolean ?: false
+            sidebarOpen.set(opening)
+            log(module, "open-dispatch opening=$opening wrapper=${chain.args.firstOrNull()?.javaClass?.name}")
             if (opening && ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)) {
                 chain.args.firstOrNull()?.let { findRootView(it)?.visibility = View.VISIBLE }
             }
             val result = chain.proceed()
             if (opening && ConfigManager.getBoolean(PREF_ENABLED, false)) {
                 val wrapper = chain.args.firstOrNull() ?: return@intercept result
-                // Fallback for builds without a discoverable Turbo callback.
-                // Run inline so panel creation and sidebar opening share the
-                // same main-thread transaction; never enqueue a later post.
-                findPanelLayout(wrapper)?.let {
-                    preparePanelHooks(module, it)
-                    expandAllApps(it)
+                findRootView(wrapper)?.post {
+                    findPanelLayout(wrapper)?.let {
+                        preparePanelHooks(module, it)
+                        log(module, "auto-expand before ${panelState(it)}")
+                        expandAllApps(it)
+                        log(module, "auto-expand after ${panelState(it)}")
+                    }
                 }
             }
             result
@@ -232,19 +233,21 @@ object SidebarDefaultExpandHook : BaseHook() {
         method.isAccessible = true
         module.hook(method).intercept { chain ->
             if (!silentAdd.get()) return@intercept chain.proceed()
-            chain.args.getOrNull(0) as? ViewGroup ?: return@intercept chain.proceed()
+            val parent = chain.args.getOrNull(0) as? ViewGroup ?: return@intercept chain.proceed()
             val view = chain.args.getOrNull(1) as? View ?: return@intercept chain.proceed()
-            // Let the native helper finish binding/registration first. Bypassing
-            // it and calling addView directly creates an empty shell panel.
-            val result = chain.proceed()
-            applySilentVisual(view)
-            result
+            val params = chain.args.getOrNull(2) as? ViewGroup.LayoutParams
+                ?: return@intercept chain.proceed()
+            applySilentAdd(parent, view, params)
+            null
         }
     }
 
-    /** 原生加入完成后清除入场动画，保留其绑定和层级初始化。 */
-    private fun applySilentVisual(view: View) {
+    /** 以终态加入全部应用面板：无入场动画、无位移缩放，直接可见。 */
+    private fun applySilentAdd(parent: ViewGroup, view: View, params: ViewGroup.LayoutParams) {
+        (view.parent as? ViewGroup)?.removeView(view)
+        view.removeCallbacks(null)
         view.animate().cancel()
+        parent.addView(view, params)
         view.alpha = 1f
         view.scaleX = 1f
         view.scaleY = 1f
@@ -272,36 +275,92 @@ object SidebarDefaultExpandHook : BaseHook() {
     private fun expandAllApps(turbo: Any?) {
         val target = turbo ?: return
         val dockLayout = findDockLayout(target) ?: return
-        // The target class was already resolved from the sidebar package and
-        // matched TurboLayout's creation signature, so a second heuristic
-        // wrapper check can only reject valid builds.
-        // Once created, never invoke the native toggle/create methods again.
-        // Some releases expose collapse as a public no-arg method, which made
-        // the old candidate loop hide the panel on the second open.
-        val panelField = findPanelField(target)
-        val existingPanel = runCatching {
-            panelField?.isAccessible = true
-            panelField?.get(target) as? View
-        }.getOrNull()
-        if (existingPanel != null) {
-            restorePanelVisibility(existingPanel)
-            return
+        if (!isNormalDock(target)) return
+        // Native expansion may dispatch an internal close-shaped callback. Keep
+        // the lifecycle marked open until the real sidebar open method receives
+        // `opening=false`, so cache cannot swallow that callback.
+        sidebarOpen.set(true)
+
+        // With panel caching enabled the native All Apps View survives the
+        // sidebar close. Do not run the public no-arg candidate loop against an
+        // existing panel: on affected builds that loop includes the collapse
+        // action, so automatic expand immediately collapses the cached panel.
+        if (ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)) {
+            val panelField = findPanelField(target)
+            val cachedPanel = runCatching {
+                panelField?.isAccessible = true
+                panelField?.get(target) as? View
+            }.getOrNull()
+            if (cachedPanel != null) {
+                if (cachedPanel.parent != null) {
+                    restorePanelVisibility(cachedPanel)
+                } else {
+                    // The cached object survived, but its native container may
+                    // have detached it during the close transition. Re-enter
+                    // only the real expansion method once so it is reattached;
+                    // never iterate all public no-arg methods (that includes
+                    // the collapse action on some releases).
+                    val expand = SidebarExpandMethodDiscovery.expansion(target.javaClass)
+                    if (expand != null) {
+                        autoExpanding.set(true)
+                        runCatching {
+                            expand.isAccessible = true
+                            silentAdd.set(false)
+                            expand.invoke(target)
+                        }.also {
+                            autoExpanding.set(false)
+                        }
+                    }
+                    restorePanelVisibility(cachedPanel)
+                }
+                dockLayout.javaClass.methods.firstOrNull {
+                    it.returnType == Void.TYPE && it.parameterCount == 1 &&
+                        it.parameterTypes[0] == Boolean::class.javaPrimitiveType
+                }?.let { setter -> runCatching { setter.invoke(dockLayout, true) } }
+                return
+            }
         }
+
         val previous = silentAdd.get()
         silentAdd.set(true)
+        autoExpanding.set(true)
         try {
-            invokeExpansionCandidates(target, panelField)
+            invokeExpansionCandidates(target)
+            dockLayout.javaClass.methods.firstOrNull {
+                it.returnType == Void.TYPE && it.parameterCount == 1 &&
+                    it.parameterTypes[0] == Boolean::class.javaPrimitiveType
+            }?.let { setter -> runCatching { setter.invoke(dockLayout, true) } }
         } finally {
+            autoExpanding.set(false)
             silentAdd.set(previous)
         }
     }
 
     private fun findPanelField(target: Any): Field? {
-        return target.javaClass.declaredFields.firstOrNull { field ->
-            ViewGroup::class.java.isAssignableFrom(field.type) &&
-                field.type.declaredMethods.any { method ->
-                    method.parameterCount == 0 && method.returnType == target.javaClass
-                }
+        // Share the exact field identified by the cache hook. AllApps exposes
+        // the sidebar wrapper, not TurboLayout, through its no-arg accessor.
+        var type: Class<*>? = target.javaClass
+        while (type != null) {
+            retainedPanelFields[type]?.let { return it }
+            type = type.superclass
+        }
+        return null
+    }
+
+    private fun panelState(target: Any): String = runCatching {
+        val field = findPanelField(target)
+        val panel = field?.get(target) as? View
+        "owner=${target.javaClass.name}@${System.identityHashCode(target)} " +
+            "field=${field?.name} panel=${panel?.javaClass?.name}@${System.identityHashCode(panel)} " +
+            "parent=${panel?.parent?.javaClass?.name} attached=${panel?.isAttachedToWindow} " +
+            "visibility=${panel?.visibility} shown=${panel?.isShown} alpha=${panel?.alpha}"
+    }.getOrElse { "panelState failed: $it" }
+
+    private fun allFields(type: Class<*>): Sequence<Field> = sequence {
+        var current: Class<*>? = type
+        while (current != null && current != Any::class.java) {
+            current.declaredFields.forEach { yield(it) }
+            current = current.superclass
         }
     }
 
@@ -315,8 +374,13 @@ object SidebarDefaultExpandHook : BaseHook() {
         panel.visibility = View.VISIBLE
     }
 
-    private fun invokeExpansionCandidates(target: Any, panelField: Field?) {
-        val methods = listOfNotNull(SidebarExpandMethodDiscovery.expansion(target.javaClass))
+    private fun invokeExpansionCandidates(target: Any) {
+        val methods = target.javaClass.declaredMethods.filter {
+            it.returnType == Void.TYPE && it.parameterCount == 0 &&
+                Modifier.isPublic(it.modifiers) && !it.isSynthetic
+        }
+        val panelField = findPanelField(target) ?: return
+        panelField.isAccessible = true
         for (method in methods) {
             val before = runCatching { panelField?.get(target) }.getOrNull()
             runCatching { method.isAccessible = true; method.invoke(target) }
@@ -399,13 +463,15 @@ object SidebarDefaultExpandHook : BaseHook() {
                 logWarn(module, "DexKit panel release: Turbo layout class unavailable")
                 return
             }
-            val panelField = turboClass.declaredFields.firstOrNull { field ->
+            val panelField = allFields(turboClass).firstOrNull { field ->
                 ViewGroup::class.java.isAssignableFrom(field.type) &&
                     field.type.declaredMethods.any { it.parameterCount == 0 && it.returnType == wrapperClass }
             } ?: run {
                 logWarn(module, "DexKit panel release: AllApps field unavailable")
                 return
             }
+            panelField.isAccessible = true
+            retainedPanelFields[turboClass] = panelField
             val releases = System.loadLibrary("dexkit").let {
                 DexKitBridge.create(loader, false).use { bridge ->
                     bridge.getClassData(turboClass)?.findMethod {
@@ -439,12 +505,52 @@ object SidebarDefaultExpandHook : BaseHook() {
                 release.isAccessible = true
                 module.hook(release).intercept { chain ->
                     val cacheEnabled = ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)
-                    if (!cacheEnabled) {
+                    if (ConfigManager.isDebugLogEnabled()) {
+                        log(module, "release-candidate ${release.toGenericString()} " +
+                            "cache=$cacheEnabled expanding=${autoExpanding.get()} ${panelState(chain.thisObject)}")
+                        if (releaseTraces.add(release)) {
+                            log(module, Log.getStackTraceString(Throwable("release-candidate caller")))
+                        }
+                    }
+                    if (!cacheEnabled || autoExpanding.get() || sidebarOpen.get()) {
                         return@intercept chain.proceed()
                     }
                     val panel = panelField.get(chain.thisObject)
-                    log(module, "panel release intercepted cacheEnabled=true panelFound=${panel != null}")
                     if (panel == null) return@intercept chain.proceed()
+                    // On the next open, TurboLayout.R() can run before the
+                    // sidebar open dispatcher. At that point the cached panel
+                    // is already detached (parent=null). Let native R() run so
+                    // the panel can be rebuilt and attached; intercepting it
+                    // here leaves the field pointing at an orphaned View and
+                    // the following automatic expand has nothing to mount.
+                    if (panel is View && panel.parent == null) {
+                        val cached = panel
+                        val result = chain.proceed()
+                        // R() clears the field and may create a fresh panel.
+                        // Restore the cached instance and attach it to the
+                        // TurboLayout so the next open reuses loaded content.
+                        runCatching {
+                            panelField.set(chain.thisObject, cached)
+                            val owner = chain.thisObject as? ViewGroup
+                            if (owner != null && cached.parent == null) {
+                                owner.addView(cached, cached.layoutParams ?: ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                ))
+                            }
+                            if (owner != null) {
+                                for (index in owner.childCount - 1 downTo 0) {
+                                    val child = owner.getChildAt(index)
+                                    if (child !== cached && child.javaClass == cached.javaClass) {
+                                        owner.removeViewAt(index)
+                                    }
+                                }
+                            }
+                            restorePanelVisibility(cached)
+                        }
+                        return@intercept result
+                    }
+                    log(module, "panel release intercepted cacheEnabled=true panelFound=true")
                     // Keep the native panel and its ViewModel/adapter alive.
                     // Running the release body removes the View from the hierarchy,
                     // and restoring only the field leaves a dead panel on next open.
