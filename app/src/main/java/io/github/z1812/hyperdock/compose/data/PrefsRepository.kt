@@ -49,6 +49,8 @@ class PrefsRepository(context: Context) {
         runCatching { prefs.getStringSet(key, emptySet())?.toSet() ?: emptySet() }
             .getOrDefault(emptySet())
 
+    fun contains(key: String): Boolean = prefs.contains(key)
+
     fun putStringSet(key: String, value: Set<String>) {
         prefs.edit().putStringSet(key, value).apply()
     }

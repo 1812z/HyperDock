@@ -153,7 +153,15 @@ internal fun QuickFunctionsPage(
                             summary = stringResource(R.string.quick_functions_summary),
                             icon = null,
                             checked = enabled.value,
-                        ) { enabled.value = it; prefs.putBoolean(PrefKeys.QUICK_FUNCTIONS_ENABLED, it) }
+                        ) {
+                            enabled.value = it
+                            prefs.putBoolean(PrefKeys.QUICK_FUNCTIONS_ENABLED, it)
+                            val sections = prefs.getStringSet(PrefKeys.SIDEBAR_SECTION_VISIBILITY).ifEmpty {
+                                setOf("all_apps", "native_quick_functions", "shortcuts", "quick_actions")
+                            }.toMutableSet().apply { if (it) add("quick_actions") else remove("quick_actions") }
+                            prefs.putStringSet(PrefKeys.SIDEBAR_SECTION_VISIBILITY, sections)
+                            prefs.putBoolean(PrefKeys.SIDEBAR_SECTION_CONFIGURED, true)
+                        }
                     }
                 }
                 item { SectionTitle(stringResource(R.string.quick_functions_added)) }

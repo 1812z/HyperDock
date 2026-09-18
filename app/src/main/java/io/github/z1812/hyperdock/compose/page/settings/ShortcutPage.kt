@@ -81,6 +81,11 @@ internal fun ShortcutPage(
                 ) {
                     enabled.value = it
                     prefs.putBoolean(KEY_SHORTCUTS_ENABLED, it)
+                    val sections = prefs.getStringSet(PrefKeys.SIDEBAR_SECTION_VISIBILITY).ifEmpty {
+                        setOf("all_apps", "native_quick_functions", "shortcuts", "quick_actions")
+                    }.toMutableSet().apply { if (it) add("shortcuts") else remove("shortcuts") }
+                    prefs.putStringSet(PrefKeys.SIDEBAR_SECTION_VISIBILITY, sections)
+                    prefs.putBoolean(PrefKeys.SIDEBAR_SECTION_CONFIGURED, true)
                 }
             }
         }

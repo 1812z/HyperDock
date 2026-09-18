@@ -45,6 +45,10 @@ import org.luckypray.dexkit.DexKitBridge
  */
 object SidebarShortcutHook : BaseHook() {
     private const val TAG = "HyperDock[SidebarShortcut]"
+    private const val SECTION_ALL_APPS = "all_apps"
+    private const val SECTION_NATIVE_QUICK_FUNCTIONS = "native_quick_functions"
+    private const val CUSTOM_SHORTCUTS = "shortcuts"
+    private const val CUSTOM_QUICK_ACTIONS = "quick_actions"
 
     // 下面的类均在 prepare() 中按方法/字段签名从当前 APK dex 自动发现。
 
@@ -207,12 +211,20 @@ object SidebarShortcutHook : BaseHook() {
                     val position = chain.args.getOrNull(0) as? Int
                         ?: return@intercept chain.proceed()
                     val displayed = activeAdapterModels
+                    fun fullLineSpan(): Int {
+                        val limit = displayed.size.coerceAtMost(64)
+                        for (candidate in 0 until limit) {
+                            val span = chain.proceed(arrayOf<Any?>(candidate)) as? Int ?: continue
+                            if (span > 1) return span
+                        }
+                        return 1
+                    }
                     if (position in displayed.indices) {
                         val item = displayed[position]
                         val wholeLine = item.javaClass == titleModelType ||
                             dividerModel?.javaClass == item.javaClass
                         return@intercept if (wholeLine) {
-                            chain.proceed(arrayOf<Any?>(0)) as? Int ?: 1
+                            fullLineSpan()
                         } else 1
                     }
                     val officialCount = officialItemCount
@@ -222,7 +234,7 @@ object SidebarShortcutHook : BaseHook() {
                         val wholeLine = item.javaClass == titleModelType ||
                             dividerModel?.javaClass == item.javaClass
                         return@intercept if (wholeLine) {
-                            chain.proceed(arrayOf<Any?>(0)) as? Int ?: 1
+                            fullLineSpan()
                         } else 1
                     }
                     if (stateFlowSynchronized) return@intercept chain.proceed()
@@ -751,17 +763,24 @@ object SidebarShortcutHook : BaseHook() {
         // Preserve the configured app whitelist/blacklist. The native list and
         // its state wrapper are both passed through this same injection path.
         val filtered = filterCustomApps(original)
-        val quickFunctions = if (ConfigManager.getBoolean(PrefKeys.QUICK_FUNCTIONS_ENABLED, false)) {
+        val quickFunctions = if (sectionEnabled(CUSTOM_QUICK_ACTIONS, PrefKeys.QUICK_FUNCTIONS_ENABLED)) {
             ConfigManager.getStringSet(PrefKeys.QUICK_FUNCTIONS_ADDED, emptySet())
                 .filter { it.isNotBlank() }
                 .map { "activity:$it" }
                 .sorted()
         } else emptyList()
-        val added = if (ConfigManager.getBoolean(PrefKeys.SHORTCUTS_ENABLED, false)) {
+        val added = if (sectionEnabled(CUSTOM_SHORTCUTS, PrefKeys.SHORTCUTS_ENABLED)) {
             ConfigManager.getStringSet(PrefKeys.SHORTCUTS_ADDED, emptySet())
         } else emptySet()
         val ordered = orderIds(added)
-        if (quickFunctions.isEmpty() && ordered.isEmpty()) {
+        val dividerIndex = filtered.indexOfFirst { isDividerModel(it) }
+        val nativeAllApps = if (dividerIndex >= 0) filtered.take(dividerIndex) else filtered
+        // Divider is a layout separator, not part of either native section.
+        // Keep it out of the section payload so reordering cannot move it with
+        // one particular section; it is inserted between rendered sections below.
+        val nativeQuickFunctions = if (dividerIndex >= 0) filtered.drop(dividerIndex + 1) else emptyList()
+        val hasSectionConfig = ConfigManager.contains(PrefKeys.SIDEBAR_SECTION_CONFIGURED)
+        if (!hasSectionConfig && quickFunctions.isEmpty() && ordered.isEmpty()) {
             injectedPrefixSize = 0
             officialItemCount = filtered.size
             injectedTail = emptyList()
@@ -777,33 +796,35 @@ object SidebarShortcutHook : BaseHook() {
             .mapNotNull { readTitleResource(it) }
             .firstOrNull { it > 0 }
             ?: android.R.string.ok
-        // Keep the official dataset byte-for-byte in front. Appending our own
-        // section means native title positions, sorting and SpanSizeLookup stay
-        // completely untouched.
-        result.addAll(filtered)
-        if (ordered.isNotEmpty()) {
-            dividerModel?.let { result.add(it) }
-            buildTitle(styleRes, sectionTitle())?.let {
-                result.add(it)
-            }
-        }
         var created = 0
-        ordered.forEach { id ->
-            buildShortcut(id)?.let {
-                result.add(it)
-                created++
+        fun beginSection() {
+            if (result.isNotEmpty()) dividerModel?.let { result.add(it) }
+        }
+        sectionOrder().forEach { section ->
+            when (section) {
+                SECTION_ALL_APPS -> if (sectionEnabled(SECTION_ALL_APPS, null) && nativeAllApps.isNotEmpty()) {
+                    beginSection()
+                    result.addAll(nativeAllApps)
+                }
+                SECTION_NATIVE_QUICK_FUNCTIONS -> if (sectionEnabled(SECTION_NATIVE_QUICK_FUNCTIONS, null) && nativeQuickFunctions.isNotEmpty()) {
+                    beginSection()
+                    result.addAll(nativeQuickFunctions)
+                }
+                CUSTOM_SHORTCUTS -> if (ordered.isNotEmpty()) {
+                    beginSection()
+                    buildTitle(styleRes, sectionTitle())?.let { result.add(it) }
+                    ordered.forEach { id -> buildShortcut(id)?.let { result.add(it); created++ } }
+                }
+                CUSTOM_QUICK_ACTIONS -> if (quickFunctions.isNotEmpty()) {
+                    beginSection()
+                    buildTitle(styleRes, quickFunctionTitle())?.let { result.add(it) }
+                    quickFunctions.forEach { id -> buildShortcut(id)?.let { result.add(it) } }
+                }
             }
         }
-        if (quickFunctions.isNotEmpty()) {
-            dividerModel?.let { result.add(it) }
-            buildTitle(styleRes, quickFunctionTitle())?.let { result.add(it) }
-        }
-        // 自定义显式 Activity 单独作为“快捷功能”栏目追加，避免和磁贴混排。
-        quickFunctions.forEach { id ->
-            buildShortcut(id)?.let { result.add(it) }
-        }
-        officialItemCount = filtered.size
-        injectedTail = result.drop(filtered.size)
+        officialItemCount = nativeAllApps.size + nativeQuickFunctions.size
+        injectedTail = result.filter { it !in filtered }
+        activeAdapterModels = result
         if (ordered.isNotEmpty() && created == 0) {
             log(module, "shortcut models unavailable: requested=${ordered.size} quickInfoFields=${quickInfoStringFields.size}")
         }
@@ -917,6 +938,27 @@ object SidebarShortcutHook : BaseHook() {
         val others = added.filter { it !in SYSTEM_LABELS && !it.startsWith("activity:") && '/' !in it }.sorted()
         return system + activities + thirdParty + others
     }
+
+    private fun sectionOrder(): List<String> {
+        val configured = ConfigManager.getString(PrefKeys.SIDEBAR_SECTION_ORDER, "")
+            .split(',').map(String::trim)
+        return (configured + listOf(SECTION_ALL_APPS, SECTION_NATIVE_QUICK_FUNCTIONS, CUSTOM_SHORTCUTS, CUSTOM_QUICK_ACTIONS))
+            .filter { it == SECTION_ALL_APPS || it == SECTION_NATIVE_QUICK_FUNCTIONS ||
+                it == CUSTOM_SHORTCUTS || it == CUSTOM_QUICK_ACTIONS }
+            .distinct()
+    }
+
+    private fun sectionEnabled(id: String, fallbackKey: String?): Boolean {
+        if (!ConfigManager.contains(PrefKeys.SIDEBAR_SECTION_CONFIGURED)) {
+            return if (id == CUSTOM_SHORTCUTS || id == CUSTOM_QUICK_ACTIONS) {
+                fallbackKey?.let { ConfigManager.getBoolean(it, false) } == true
+            } else true
+        }
+        val configured = ConfigManager.getStringSet(PrefKeys.SIDEBAR_SECTION_VISIBILITY, emptySet())
+        return id in configured
+    }
+
+    private fun isDividerModel(item: Any): Boolean = dividerModel?.javaClass == item.javaClass
 
     private fun buildTitle(styleRes: Int, title: String): Any? {
         val ctor = titleCtor ?: return null

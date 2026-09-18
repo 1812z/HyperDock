@@ -11,6 +11,10 @@ import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.lang.reflect.Field
+import java.util.Collections
+import java.util.WeakHashMap
+import java.util.HashSet
 import java.util.concurrent.atomic.AtomicBoolean
 import org.luckypray.dexkit.DexKitBridge
 
@@ -37,6 +41,9 @@ object SidebarDefaultExpandHook : BaseHook() {
     /** 仅在“静默加入全部应用面板”期间为 true，用于跳过原生入场动画。 */
     private val silentAdd = AtomicBoolean(false)
     private val silentHookInstalled = AtomicBoolean(false)
+    private val retainedPanelFields = Collections.synchronizedMap(WeakHashMap<Class<*>, Field>())
+    private val retentionHooked = Collections.synchronizedSet(HashSet<Method>())
+    private val cleanupMethods = Collections.synchronizedSet(HashSet<Method>())
     @Volatile private var discoveredClasses: List<Class<*>>? = null
 
     override fun getTag() = TAG
@@ -94,7 +101,40 @@ object SidebarDefaultExpandHook : BaseHook() {
         }.firstOrNull()
 
     private fun preparePanelHooks(module: XposedModule, panelLayout: Any) {
+        // Do not retain the old AllApps View here. Its lifecycle owns a
+        // ViewModelStore/adapter; restoring it after any guessed cleanup hook
+        // leaves a dead panel that immediately collapses on touch.
         installSilentAddHook(module, panelLayout)
+    }
+
+    private fun installRetentionHooks(module: XposedModule, panelLayout: Any) {
+        panelLayout.javaClass.declaredMethods.filter {
+            it.returnType == Void.TYPE && it.parameterCount == 0
+        }.forEach { method ->
+            if (!retentionHooked.add(method)) return@forEach
+            method.isAccessible = true
+            module.hook(method).intercept { chain ->
+                if (!ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)) {
+                    return@intercept chain.proceed()
+                }
+                val field = retainedPanelFields[chain.thisObject.javaClass]
+                val before = runCatching { field?.get(chain.thisObject) }.getOrNull()
+                if (before != null && cleanupMethods.contains(method)) {
+                    runCatching { field?.set(chain.thisObject, null) }
+                    return@intercept try {
+                        chain.proceed()
+                    } finally {
+                        runCatching { field?.set(chain.thisObject, before) }
+                    }
+                }
+                val result = chain.proceed()
+                if (before != null && runCatching { field?.get(chain.thisObject) }.getOrNull() == null) {
+                    cleanupMethods.add(method)
+                    runCatching { field?.set(chain.thisObject, before) }
+                }
+                result
+            }
+        }
     }
 
     private fun installSilentAddHook(module: XposedModule, panelLayout: Any) {
@@ -302,8 +342,18 @@ object SidebarDefaultExpandHook : BaseHook() {
             Modifier.isStatic(method.modifiers) && method.returnType == Void.TYPE && p.size == 6 &&
                 p[1] == Boolean::class.javaPrimitiveType &&
                 p[2] == Float::class.javaPrimitiveType && p[3] == Float::class.javaPrimitiveType &&
-                Runnable::class.java.isAssignableFrom(p[4]) && Runnable::class.java.isAssignableFrom(p[5]) &&
-                p[0].declaredFields.any { ViewGroup::class.java.isAssignableFrom(it.type) }
+                Runnable::class.java.isAssignableFrom(p[4]) && Runnable::class.java.isAssignableFrom(p[5])
+        }
+    }
+
+    private fun findSidebarRemoveMethod(loader: ClassLoader): Method? {
+        return discoverClasses(loader).asSequence().flatMap { type ->
+            runCatching { type.declaredMethods.asSequence() }.getOrDefault(emptySequence())
+        }.firstOrNull { method ->
+            val p = method.parameterTypes
+            method.returnType == Void.TYPE && p.size == 2 &&
+                p[1] == Boolean::class.javaPrimitiveType &&
+                p[0].declaredMethods.any { it.parameterCount == 0 && ViewGroup::class.java.isAssignableFrom(it.returnType) }
         }
     }
 
@@ -383,7 +433,8 @@ object SidebarDefaultExpandHook : BaseHook() {
         val result = runCatching {
             System.loadLibrary("dexkit")
             DexKitBridge.create(loader, false).use { bridge ->
-                bridge.findClass { searchPackages("com.miui.dock.sidebar") }
+                (bridge.findClass { searchPackages("com.miui.dock.sidebar") } +
+                    bridge.findClass { searchPackages("xb") }).distinctBy { it.name }
                     .mapNotNull { data ->
                         runCatching {
                             data.getInstance(loader).also { type ->
