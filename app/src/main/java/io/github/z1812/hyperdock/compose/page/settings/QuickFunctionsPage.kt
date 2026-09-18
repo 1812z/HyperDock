@@ -4,25 +4,44 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.github.z1812.hyperdock.PrefKeys
 import io.github.z1812.hyperdock.R
 import io.github.z1812.hyperdock.compose.component.DetailPage
@@ -32,6 +51,7 @@ import io.github.z1812.hyperdock.compose.component.SettingsActionWithArrow
 import io.github.z1812.hyperdock.compose.data.PrefsRepository
 import io.github.z1812.hyperdock.compose.data.rememberBooleanPreference
 import io.github.z1812.hyperdock.compose.data.rememberStringSetPreference
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.FloatingActionButton
@@ -40,6 +60,7 @@ import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowBottomSheet
+import top.yukonga.miuix.kmp.window.WindowDialog
 
 private data class QuickActivity(
     val component: ComponentName,
@@ -57,12 +78,17 @@ internal fun QuickFunctionsPage(
     val context = androidx.compose.ui.platform.LocalContext.current
     val enabled = rememberBooleanPreference(prefs, PrefKeys.QUICK_FUNCTIONS_ENABLED, false)
     val saved = rememberStringSetPreference(prefs, PrefKeys.QUICK_FUNCTIONS_ADDED)
+    val iconUris = rememberStringSetPreference(prefs, PrefKeys.QUICK_FUNCTIONS_ICON_URIS)
+    val labels = rememberStringSetPreference(prefs, PrefKeys.QUICK_FUNCTIONS_LABELS)
     var view by remember { mutableStateOf(QuickFunctionsView.Root) }
     var expanded by remember { mutableStateOf(false) }
     var selectedPackage by remember { mutableStateOf<String?>(null) }
     var pending by remember { mutableStateOf<QuickActivity?>(null) }
     var showSaveSheet by remember { mutableStateOf(false) }
     var showManualSheet by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<QuickActivity?>(null) }
+    var editName by remember { mutableStateOf("") }
+    var editIconUri by remember { mutableStateOf<String?>(null) }
     var manualPackage by remember { mutableStateOf("") }
     var manualClass by remember { mutableStateOf("") }
     var manualName by remember { mutableStateOf("") }
@@ -98,6 +124,32 @@ internal fun QuickFunctionsPage(
         if (component != null) {
             val activity = resolveActivity(context, component)
             if (activity != null) requestSave(activity)
+        }
+    }
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        val activity = editing
+        if (uri != null && activity != null) runCatching {
+            context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer ->
+                writer.appendLine("name=${editName.trim()}")
+                writer.appendLine("component=${activity.component.flattenToString()}")
+                editIconUri?.let { writer.appendLine("icon=$it") }
+            }
+        }
+    }
+    val iconLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        }
+        editing?.let { activity ->
+            editIconUri = uri.toString()
+            val next = iconUris.value.filterNot { it.startsWith("${activity.component.flattenToString()}=") }.toMutableSet()
+            next += "${activity.component.flattenToString()}=${uri}"
+            iconUris.value = next
+            prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_ICON_URIS, next)
         }
     }
 
@@ -168,35 +220,60 @@ internal fun QuickFunctionsPage(
                 if (saved.value.isEmpty()) {
                     item { Text(stringResource(R.string.quick_functions_empty)) }
                 } else {
-                    items(saved.value.toList(), key = { it }) { componentId ->
-                        val activity = resolveActivity(context, ComponentName.unflattenFromString(componentId))
-                        Card(modifier = Modifier.fillMaxWidth(), insideMargin = PaddingValues(0.dp)) {
-                            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp)) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(activity?.label ?: componentId.substringAfter('/'), maxLines = 1)
-                                    Text(componentId, maxLines = 1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                    item {
+                        QuickFunctionsGrid(
+                            items = saved.value.mapNotNull { componentId ->
+                                resolveActivity(context, ComponentName.unflattenFromString(componentId))?.let { activity ->
+                                    val custom = labels.value.firstOrNull { it.startsWith("$componentId=") }?.substringAfter('=')
+                                    if (custom.isNullOrBlank()) activity else activity.copy(label = custom)
                                 }
-                                TextButton(
-                                    text = stringResource(R.string.delete),
-                                    onClick = { prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_ADDED, saved.value - componentId) },
-                                )
+                            },
+                            iconUris = iconUris.value,
+                            onClick = { activity ->
+                                editing = activity
+                                editName = activity.label
+                                editIconUri = iconUris.value.firstOrNull { it.startsWith("${activity.component.flattenToString()}=") }?.substringAfter('=')
+                            },
+                        )
+                    }
+                }
+            }
+            QuickFunctionsView.Apps -> {
+                item {
+                    AnimatedContent(view, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "quick_functions_apps") { current ->
+                        if (current == QuickFunctionsView.Apps) {
+                            Column {
+                                apps.forEach { app ->
+                                    AppPickerRow(app.first, app.second) {
+                                        selectedPackage = app.first
+                                        view = QuickFunctionsView.Activities
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-            QuickFunctionsView.Apps -> {
-                items(apps, key = { it.first }) { app ->
-                    SettingsActionWithArrow(app.second) {
-                        selectedPackage = app.first
-                        view = QuickFunctionsView.Activities
-                    }
-                }
-            }
             QuickFunctionsView.Activities -> {
-                items(activities, key = { it.component.flattenToString() }) { activity ->
-                    SettingsActionWithArrow(activity.label, summary = activity.component.className) {
-                        requestSave(activity)
+                item {
+                    AnimatedContent(view, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "quick_functions_activities") { current ->
+                        if (current == QuickFunctionsView.Activities) {
+                            Column {
+                                activities.forEach { activity ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        QuickFunctionIcon(activity)
+                                        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                                            Text(activity.label, maxLines = 1)
+                                            Text(activity.component.className, maxLines = 1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                                        }
+                                        Button(onClick = { requestSave(activity) }) { Text("+") }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -208,7 +285,7 @@ internal fun QuickFunctionsPage(
         title = stringResource(R.string.quick_functions_save_title),
         onDismissRequest = { showSaveSheet = false; pending = null },
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(modifier = Modifier.padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(pending?.label.orEmpty())
             Text(pending?.component?.flattenToString().orEmpty(), color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -223,7 +300,7 @@ internal fun QuickFunctionsPage(
         title = stringResource(R.string.quick_functions_add_manual),
         onDismissRequest = { showManualSheet = false },
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(modifier = Modifier.padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             TextField(manualName, { manualName = it }, label = stringResource(R.string.quick_functions_name), singleLine = true)
             TextField(manualPackage, { manualPackage = it }, label = stringResource(R.string.quick_functions_package), singleLine = true)
             TextField(manualClass, { manualClass = it }, label = stringResource(R.string.quick_functions_activity), singleLine = true)
@@ -236,6 +313,55 @@ internal fun QuickFunctionsPage(
                 enabled = manualPackage.isNotBlank() && manualClass.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(stringResource(R.string.next)) }
+        }
+    }
+
+    WindowDialog(
+        show = editing != null,
+        title = editing?.label.orEmpty(),
+        onDismissRequest = { editing = null },
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(editing?.component?.flattenToString().orEmpty(), color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            TextField(editName, { editName = it }, label = stringResource(R.string.quick_functions_name), singleLine = true)
+            Button(
+                onClick = { exportLauncher.launch("hyperdock-quick-launch.txt") },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColorsPrimary(),
+            ) {
+                Text(stringResource(R.string.quick_functions_export))
+            }
+            Button(onClick = { iconLauncher.launch(arrayOf("image/*")) }, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.quick_functions_choose_icon))
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                TextButton(
+                    text = stringResource(R.string.delete),
+                    onClick = {
+                        editing?.let { activity ->
+                            val id = activity.component.flattenToString()
+                            prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_ADDED, saved.value - id)
+                            prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_ICON_URIS, iconUris.value.filterNot { it.startsWith("$id=") }.toSet())
+                            prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_LABELS, labels.value.filterNot { it.startsWith("$id=") }.toSet())
+                        }
+                        editing = null
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+                Button(
+                    onClick = {
+                        editing?.let { activity ->
+                            val id = activity.component.flattenToString()
+                            val next = labels.value.filterNot { it.startsWith("$id=") }.toMutableSet()
+                            if (editName.isNotBlank()) next += "$id=${editName.trim()}"
+                            prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_LABELS, next)
+                        }
+                        editing = null
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColorsPrimary(),
+                ) { Text(stringResource(R.string.save)) }
+            }
         }
     }
 }
@@ -261,4 +387,97 @@ private fun resolveActivity(context: Context, component: ComponentName?): QuickA
         if (!info.exported) return@runCatching null
         QuickActivity(component, info.loadLabel(context.packageManager).toString(), component.packageName)
     }.getOrNull()
+}
+
+@Composable
+private fun QuickFunctionsGrid(
+    items: List<QuickActivity>,
+    iconUris: Set<String> = emptySet(),
+    onClick: (QuickActivity) -> Unit,
+) {
+    if (items.isEmpty()) return
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val cardWidth = 76.dp
+        val columns = ((maxWidth + 12.dp) / (cardWidth + 12.dp)).toInt().coerceAtLeast(1)
+        val gap = if (columns > 1) (maxWidth - cardWidth * columns) / (columns - 1) else 0.dp
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            items.chunked(columns).forEach { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+                    row.forEach { activity ->
+                        Column(
+                            Modifier.width(cardWidth),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Card(
+                                onClick = { onClick(activity) },
+                                modifier = Modifier.size(cardWidth),
+                                cornerRadius = 18.dp,
+                                insideMargin = PaddingValues(0.dp),
+                            ) {
+                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    QuickFunctionIcon(
+                                        activity,
+                                        iconUris.firstOrNull { it.startsWith("${activity.component.flattenToString()}=") }?.substringAfter('='),
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Text(activity.label, maxLines = 2, modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuickFunctionIcon(activity: QuickActivity, customUri: String? = null) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val bitmap = remember(activity.component.packageName, customUri) {
+        runCatching {
+            if (!customUri.isNullOrBlank()) {
+                context.contentResolver.openInputStream(Uri.parse(customUri))?.use { input ->
+                    android.graphics.BitmapFactory.decodeStream(input)
+                }
+            } else {
+            val drawable = context.packageManager.getApplicationIcon(activity.component.packageName)
+            val size = 96
+            Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also { bitmap ->
+                val canvas = Canvas(bitmap)
+                drawable.setBounds(0, 0, size, size)
+                drawable.draw(canvas)
+            }
+            }
+        }.getOrNull()
+    }
+    if (bitmap != null) {
+        Image(bitmap.asImageBitmap(), contentDescription = activity.label, modifier = Modifier.size(42.dp))
+    } else {
+        Text("•", fontSize = 32.sp, color = MiuixTheme.colorScheme.primary)
+    }
+}
+
+@Composable
+private fun AppPickerRow(packageName: String, label: String, onClick: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val bitmap = remember(packageName) {
+        runCatching {
+            val drawable = context.packageManager.getApplicationIcon(packageName)
+            Bitmap.createBitmap(72, 72, Bitmap.Config.ARGB_8888).also { bitmap ->
+                drawable.setBounds(0, 0, 72, 72)
+                drawable.draw(Canvas(bitmap))
+            }
+        }.getOrNull()
+    }
+    Card(onClick = onClick, modifier = Modifier.fillMaxWidth(), insideMargin = PaddingValues(12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (bitmap != null) Image(bitmap.asImageBitmap(), label, Modifier.size(42.dp))
+            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                Text(label, maxLines = 1)
+                Text(packageName, maxLines = 1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            }
+            Text("›", fontSize = 24.sp, color = MiuixTheme.colorScheme.onSurfaceVariantActions)
+        }
+    }
 }

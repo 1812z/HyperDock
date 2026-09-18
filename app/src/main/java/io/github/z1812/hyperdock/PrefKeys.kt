@@ -35,6 +35,8 @@ object PrefKeys {
     // 自定义快捷功能（显式 Activity）
     const val QUICK_FUNCTIONS_ENABLED = "quick_functions_enabled"
     const val QUICK_FUNCTIONS_ADDED = "quick_functions_added"
+    const val QUICK_FUNCTIONS_ICON_URIS = "quick_functions_icon_uris"
+    const val QUICK_FUNCTIONS_LABELS = "quick_functions_labels"
 
     // 侧边栏“全部应用”面板的栏目显示与顺序。顺序以逗号分隔保存，避免
     // SharedPreferences StringSet 丢失用户排序；可见栏目保存为 StringSet。
@@ -69,6 +71,8 @@ object PrefKeys {
         SHORTCUTS_ADDED,
         QUICK_FUNCTIONS_ENABLED,
         QUICK_FUNCTIONS_ADDED,
+        QUICK_FUNCTIONS_ICON_URIS,
+        QUICK_FUNCTIONS_LABELS,
         SIDEBAR_SECTION_VISIBILITY,
         SIDEBAR_SECTION_ORDER,
         SIDEBAR_SECTION_CONFIGURED,
