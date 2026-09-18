@@ -34,7 +34,7 @@
     <string name="sidebar_section_all_apps">全部应用</string>
     <string name="sidebar_section_native_quick_functions">快捷功能</string>
     <string name="sidebar_section_shortcuts">快捷方式</string>
-    <string name="sidebar_section_quick_actions">自定义快捷功能</string>
+    <string name="sidebar_section_quick_actions">快速启动</string>
     <string name="sidebar_section_move_up">上移</string>
     <string name="sidebar_section_move_down">下移</string>
     <string name="sidebar_panel_cache">缓存全部应用面板</string>
@@ -52,8 +52,8 @@
 
     <string name="shortcuts">快捷方式</string>
     <string name="shortcuts_summary">在全部应用面板与侧边栏展示自定义快捷方式</string>
-    <string name="quick_functions">快捷功能</string>
-    <string name="quick_functions_summary">从侧边栏启动选定的应用 Activity</string>
+    <string name="quick_functions">快速启动</string>
+    <string name="quick_functions_summary">从侧边栏快速启动选定的应用 Activity</string>
     <string name="quick_functions_added">已添加</string>
     <string name="quick_functions_empty">暂未添加快捷功能</string>
     <string name="quick_functions_add">添加快捷功能</string>

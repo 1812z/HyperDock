@@ -36,7 +36,7 @@
     <string name="sidebar_section_all_apps">All apps</string>
     <string name="sidebar_section_native_quick_functions">Quick functions</string>
     <string name="sidebar_section_shortcuts">Shortcuts</string>
-    <string name="sidebar_section_quick_actions">Quick actions</string>
+    <string name="sidebar_section_quick_actions">Quick launch</string>
     <string name="sidebar_section_move_up">Move up</string>
     <string name="sidebar_section_move_down">Move down</string>
     <string name="sidebar_panel_cache">Cache all-apps panel</string>
@@ -55,8 +55,8 @@
     <!-- Shortcuts -->
     <string name="shortcuts">Shortcuts</string>
     <string name="shortcuts_summary">Show custom shortcuts in the all-apps panel and dock</string>
-    <string name="quick_functions">Quick actions</string>
-    <string name="quick_functions_summary">Launch selected application activities from the sidebar</string>
+    <string name="quick_functions">Quick launch</string>
+    <string name="quick_functions_summary">Quickly launch selected application activities from the sidebar</string>
     <string name="quick_functions_added">Added</string>
     <string name="quick_functions_empty">No quick actions added</string>
     <string name="quick_functions_add">Add quick action</string>

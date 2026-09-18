@@ -1,15 +1,22 @@
 package io.github.z1812.hyperdock.compose.page.settings
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.animateItem
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.z1812.hyperdock.PrefKeys
@@ -22,9 +29,12 @@ import io.github.z1812.hyperdock.compose.data.rememberBooleanPreference
 import io.github.z1812.hyperdock.compose.data.rememberStringPreference
 import io.github.z1812.hyperdock.compose.data.rememberStringSetPreference
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.icon.extended.Back
 
 @Composable
 internal fun SidebarBehaviorPage(prefs: PrefsRepository, onBack: () -> Unit) {
@@ -97,16 +107,30 @@ internal fun SidebarBehaviorPage(prefs: PrefsRepository, onBack: () -> Unit) {
         item {
             SectionTitle(stringResource(R.string.sidebar_sections_order))
             Card(modifier = Modifier.fillMaxWidth()) {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    orderedSections.forEachIndexed { index, id ->
-                        val labelRes = labels.first { it.first == id }.second
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(stringResource(labelRes), Modifier.weight(1f), color = MiuixTheme.colorScheme.onSurface)
-                            TextButton("↑", enabled = index > 0, onClick = { moveSection(id, -1) }, modifier = Modifier.size(44.dp))
-                            TextButton("↓", enabled = index < orderedSections.lastIndex, onClick = { moveSection(id, 1) }, modifier = Modifier.size(44.dp))
+                if (orderedSections.isEmpty()) {
+                    Text(stringResource(R.string.sidebar_sections_order_summary), Modifier.padding(16.dp), color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().height((orderedSections.size * 56).dp),
+                        userScrollEnabled = false,
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        items(orderedSections, key = { it }) { id ->
+                            val index = orderedSections.indexOf(id)
+                            val labelRes = labels.first { it.first == id }.second
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .animateItem()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(stringResource(labelRes), Modifier.weight(1f), color = MiuixTheme.colorScheme.onSurface)
+                                CircleMoveButton(90f, index > 0, stringResource(R.string.sidebar_section_move_up)) { moveSection(id, -1) }
+                                CircleMoveButton(270f, index < orderedSections.lastIndex, stringResource(R.string.sidebar_section_move_down)) { moveSection(id, 1) }
+                            }
                         }
                     }
-                    if (orderedSections.isEmpty()) Text(stringResource(R.string.sidebar_sections_order_summary), Modifier.padding(16.dp), color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                 }
             }
         }
@@ -119,3 +143,32 @@ private const val SECTION_SHORTCUTS = "shortcuts"
 private const val SECTION_QUICK_ACTIONS = "quick_actions"
 private const val DEFAULT_SECTION_ORDER = "all_apps,native_quick_functions,shortcuts,quick_actions"
 private val DEFAULT_VISIBLE_SECTIONS = setOf(SECTION_ALL_APPS, SECTION_NATIVE_QUICK_FUNCTIONS, SECTION_SHORTCUTS, SECTION_QUICK_ACTIONS)
+
+@Composable
+private fun CircleMoveButton(
+    iconRotation: Float,
+    enabled: Boolean,
+    description: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .padding(start = 4.dp)
+            .size(36.dp)
+            .background(
+                color = if (enabled) MiuixTheme.colorScheme.primary
+                else MiuixTheme.colorScheme.primary.copy(alpha = 0.35f),
+                shape = CircleShape,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(36.dp)) {
+            Icon(
+                imageVector = MiuixIcons.Back,
+                contentDescription = description,
+                modifier = Modifier.size(18.dp).graphicsLayer(rotationZ = iconRotation),
+                tint = MiuixTheme.colorScheme.onSurface,
+            )
+        }
+    }
+}

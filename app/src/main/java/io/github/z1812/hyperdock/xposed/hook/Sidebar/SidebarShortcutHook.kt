@@ -132,6 +132,7 @@ object SidebarShortcutHook : BaseHook() {
     private var lastPrepareFailure: String? = null
     private var preparePermanentlyFailed = false
     private var injectionLogged = false
+    @Volatile private var cachedNativeModels: List<Any>? = null
 
     override fun getTag() = TAG
 
@@ -164,6 +165,11 @@ object SidebarShortcutHook : BaseHook() {
                             // for search/pinned/edit-state lists. Only mutate the flow whose
                             // payload is actually Model (App/Title/Shortcut); touching an
                             // unrelated list makes native titles get sorted as tiles.
+                            if (list.isEmpty() && ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)) {
+                                cachedNativeModels?.let { cached ->
+                                    return@intercept chain.proceed(arrayOf<Any?>(inject(module, cached)))
+                                }
+                            }
                             if (isLikelyAllAppsList(list)) {
                                 val injected = inject(module, list)
                                 if (injected !== list) stateFlowSynchronized = true
@@ -755,7 +761,11 @@ object SidebarShortcutHook : BaseHook() {
         // The adapter emits an empty initial snapshot before All Apps data is
         // loaded. Do not create a transient shortcut section from that snapshot;
         // the next non-empty emission will be processed normally.
-        if (original.isEmpty()) return original
+        if (original.isEmpty()) {
+            return if (ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)) {
+                cachedNativeModels ?: original
+            } else original
+        }
         // 每次 StateFlow 发射都代表面板重新展开/刷新，重新读取 SystemUI 的当前状态。
         queriedStates.clear()
         // setValue 可能被多个观察者/重放路径调用；绝不能叠加第二个自定义栏目。
@@ -763,6 +773,7 @@ object SidebarShortcutHook : BaseHook() {
         // Preserve the configured app whitelist/blacklist. The native list and
         // its state wrapper are both passed through this same injection path.
         val filtered = filterCustomApps(original)
+        cachedNativeModels = original.toList()
         val quickFunctions = if (sectionEnabled(CUSTOM_QUICK_ACTIONS, PrefKeys.QUICK_FUNCTIONS_ENABLED)) {
             ConfigManager.getStringSet(PrefKeys.QUICK_FUNCTIONS_ADDED, emptySet())
                 .filter { it.isNotBlank() }
@@ -1499,7 +1510,7 @@ object SidebarShortcutHook : BaseHook() {
 
     private fun sectionTitle(): String = if (isChinese()) "快捷方式" else "Shortcuts"
 
-    private fun quickFunctionTitle(): String = if (isChinese()) "快捷功能" else "Quick functions"
+    private fun quickFunctionTitle(): String = if (isChinese()) "快速启动" else "Quick launch"
 
 
     private fun enumByName(type: Class<*>?, name: String): Any? {
