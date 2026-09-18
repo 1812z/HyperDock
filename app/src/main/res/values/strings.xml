@@ -27,7 +27,7 @@
     <!-- Sidebar -->
     <string name="sidebar">Sidebar</string>
     <string name="sidebar_behavior">Behavior</string>
-    <string name="sidebar_expand_all_apps">Expand all apps by default</string>
+    <string name="sidebar_expand_all_apps">Auto-expand panel</string>
     <string name="sidebar_expand_all_apps_summary">Show the all-apps panel as soon as the sidebar opens, animated together with the sidebar itself</string>
     <string name="sidebar_sections_customization">Panel sections</string>
     <string name="sidebar_sections_customization_summary">Choose which sections are shown in the all-apps panel</string>
@@ -39,7 +39,7 @@
     <string name="sidebar_section_quick_actions">Quick launch</string>
     <string name="sidebar_section_move_up">Move up</string>
     <string name="sidebar_section_move_down">Move down</string>
-    <string name="sidebar_panel_cache">Cache all-apps panel</string>
+    <string name="sidebar_panel_cache">Preload panel</string>
     <string name="sidebar_staggered_expand">Staggered expansion</string>
     <string name="sidebar_staggered_expand_summary">Animate the all-apps panel separately for a staggered effect with the sidebar</string>
     <string name="sidebar_panel_cache_summary">Keep the initialized panel for faster subsequent openings</string>

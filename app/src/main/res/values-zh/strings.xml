@@ -25,7 +25,7 @@
 
     <string name="sidebar">侧边栏</string>
     <string name="sidebar_behavior">行为</string>
-    <string name="sidebar_expand_all_apps">默认展开全部应用</string>
+    <string name="sidebar_expand_all_apps">自动展开面板</string>
     <string name="sidebar_expand_all_apps_summary">侧边栏滑出时即显示全部应用面板，并与侧边栏整体一起动画</string>
     <string name="sidebar_sections_customization">栏目自定义</string>
     <string name="sidebar_sections_customization_summary">选择全部应用面板中显示的栏目</string>
@@ -37,7 +37,7 @@
     <string name="sidebar_section_quick_actions">快速启动</string>
     <string name="sidebar_section_move_up">上移</string>
     <string name="sidebar_section_move_down">下移</string>
-    <string name="sidebar_panel_cache">缓存全部应用面板</string>
+    <string name="sidebar_panel_cache">面板预加载</string>
     <string name="sidebar_staggered_expand">错位展开</string>
     <string name="sidebar_staggered_expand_summary">全部应用面板以独立动画展开，与侧边栏形成错位效果</string>
     <string name="sidebar_panel_cache_summary">保留已初始化面板，加快后续打开速度</string>
