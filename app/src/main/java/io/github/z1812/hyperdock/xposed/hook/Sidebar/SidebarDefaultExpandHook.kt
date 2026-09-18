@@ -156,33 +156,43 @@ object SidebarDefaultExpandHook : BaseHook() {
         method.isAccessible = true
         module.hook(method).intercept { chain ->
             if (!silentAdd.get()) return@intercept chain.proceed()
-            val parent = chain.args.getOrNull(0) as? ViewGroup ?: return@intercept chain.proceed()
             val view = chain.args.getOrNull(1) as? View ?: return@intercept chain.proceed()
-            val params = chain.args.getOrNull(2) as? ViewGroup.LayoutParams
-                ?: return@intercept chain.proceed()
-            applySilentAdd(parent, view, params)
-            null
+            // Keep the native add path: it binds the adapter, click listener,
+            // ViewModel and TurboLayout state. Only normalize its visual state
+            // after the real hierarchy operation has completed.
+            val result = chain.proceed()
+            applySilentVisual(view)
+            result
         }
     }
 
-    /** 以终态加入全部应用面板：无入场动画、无位移缩放，直接可见。 */
-    private fun applySilentAdd(parent: ViewGroup, view: View, params: ViewGroup.LayoutParams) {
-        (view.parent as? ViewGroup)?.removeView(view)
-        view.removeCallbacks(null)
-        view.animate().cancel()
-        parent.addView(view, params)
-        view.alpha = 1f
-        view.scaleX = 1f
-        view.scaleY = 1f
-        view.translationX = 0f
-        view.translationY = 0f
-        view.visibility = View.VISIBLE
-        runCatching {
-            view.javaClass.methods.firstOrNull {
-                it.returnType == Void.TYPE && it.parameterCount == 1 &&
-                    it.parameterTypes[0] == Boolean::class.javaPrimitiveType
-            }?.invoke(view, false)
+    /** 原生加入完成后清除入场动画，保留真实面板状态。 */
+    private fun applySilentVisual(view: View) {
+        fun normalize() {
+            runCatching {
+                Class.forName("miuix.animation.Folme")
+                    .getMethod("clean", View::class.java)
+                    .invoke(null, view)
+            }
+            view.animate().cancel()
+            view.alpha = 1f
+            view.scaleX = 1f
+            view.scaleY = 1f
+            view.translationX = 0f
+            view.translationY = 0f
+            view.visibility = View.VISIBLE
         }
+        normalize()
+        // TurboLayout installs its Folme pre-draw animation after the native
+        // add returns. Normalize once more on the next frame; the native View
+        // and adapter remain untouched.
+        view.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                view.viewTreeObserver.removeOnPreDrawListener(this)
+                normalize()
+                return true
+            }
+        })
     }
 
     /**
