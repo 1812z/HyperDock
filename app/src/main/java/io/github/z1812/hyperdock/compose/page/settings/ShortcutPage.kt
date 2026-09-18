@@ -12,7 +12,13 @@ import android.graphics.RectF
 import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -23,18 +29,37 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect as WindowRect
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import io.github.z1812.hyperdock.PrefKeys
 import io.github.z1812.hyperdock.R
@@ -45,13 +70,28 @@ import io.github.z1812.hyperdock.compose.data.PrefsRepository
 import io.github.z1812.hyperdock.compose.data.ShortcutCatalog
 import io.github.z1812.hyperdock.compose.data.ShortcutItem
 import io.github.z1812.hyperdock.compose.data.rememberBooleanPreference
+import io.github.z1812.hyperdock.compose.data.rememberStringPreference
 import io.github.z1812.hyperdock.compose.data.rememberStringSetPreference
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.ChevronBackward
+import top.yukonga.miuix.kmp.icon.extended.ChevronForward
+import top.yukonga.miuix.kmp.icon.extended.Delete
 import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.roundToInt
+import kotlin.math.sin
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 @Composable
 internal fun ShortcutPage(
@@ -61,58 +101,152 @@ internal fun ShortcutPage(
     val context = LocalContext.current
     val enabled = rememberBooleanPreference(prefs, KEY_SHORTCUTS_ENABLED, false)
     val added = rememberStringSetPreference(prefs, KEY_SHORTCUTS_ADDED)
+    val order = rememberStringPreference(prefs, KEY_SHORTCUTS_ORDER, "")
     val catalog = remember { ShortcutCatalog.all(context) }
+    var flights by remember { mutableStateOf<List<Flight>?>(null) }
+    var popupFor by remember { mutableStateOf<ShortcutItem?>(null) }
+    val cardBounds = remember { mutableStateMapOf<String, WindowRect>() }
 
-    fun toggle(item: ShortcutItem) {
-        val next = if (item.id in added.value) added.value - item.id else added.value + item.id
-        added.value = next
-        prefs.putStringSet(KEY_SHORTCUTS_ADDED, next)
+    fun updateBounds(id: String, bounds: WindowRect) {
+        if (cardBounds[id] != bounds) cardBounds[id] = bounds
     }
 
-    DetailPage(title = stringResource(R.string.shortcuts), onBack = onBack) {
-        item {
-            SectionTitle(stringResource(R.string.shortcuts))
-            Card(modifier = Modifier.fillMaxWidth()) {
-                PreferenceSwitch(
-                    title = stringResource(R.string.shortcuts),
-                    summary = stringResource(R.string.shortcuts_summary),
-                    icon = null,
-                    checked = enabled.value,
-                ) {
-                    enabled.value = it
-                    prefs.putBoolean(KEY_SHORTCUTS_ENABLED, it)
-                    val sections = prefs.getStringSet(PrefKeys.SIDEBAR_SECTION_VISIBILITY).ifEmpty {
-                        setOf("all_apps", "native_quick_functions", "shortcuts", "quick_actions")
-                    }.toMutableSet().apply { if (it) add("shortcuts") else remove("shortcuts") }
-                    prefs.putStringSet(PrefKeys.SIDEBAR_SECTION_VISIBILITY, sections)
-                    prefs.putBoolean(PrefKeys.SIDEBAR_SECTION_CONFIGURED, true)
-                }
-            }
-        }
+    // 已添加的显示顺序：order 里记录的在前，未记录的新增项按 catalog 顺序追加。
+    val orderedAdded = remember(added.value, order.value, catalog) {
+        val recorded = order.value.split(',').filter { it.isNotBlank() }
+        val byId = catalog.associateBy { it.id }
+        val known = recorded.mapNotNull { byId[it] }.filter { it.id in added.value }
+        val rest = catalog.filter { it.id in added.value && it.id !in recorded }
+        known + rest
+    }
 
-        item {
-            SectionTitle(stringResource(R.string.shortcuts_added))
-            ShortcutGrid(
-                items = catalog.filter { it.id in added.value },
-                onToggle = ::toggle,
+    fun saveOrder(next: List<String>) {
+        val joined = next.joinToString(",")
+        order.value = joined
+        prefs.putString(KEY_SHORTCUTS_ORDER, joined)
+    }
+
+    fun addShortcut(item: ShortcutItem) {
+        val from = cardBounds[item.id]
+        val next = added.value + item.id
+        added.value = next
+        prefs.putStringSet(KEY_SHORTCUTS_ADDED, next)
+        saveOrder(orderedAdded.map { it.id } + item.id)
+        if (from != null) flights = listOf(Flight(item, from, adding = true))
+    }
+
+    fun deleteAdded(item: ShortcutItem) {
+        val from = cardBounds[item.id]
+        val next = added.value - item.id
+        added.value = next
+        prefs.putStringSet(KEY_SHORTCUTS_ADDED, next)
+        saveOrder(order.value.split(',').filter { it.isNotBlank() && it != item.id })
+        if (from != null) flights = listOf(Flight(item, from, adding = false))
+        popupFor = null
+    }
+
+    // 与相邻位置交换（网格跨行时即"第一行最后一个 ↔ 第二行第一个"）。
+    fun moveAdded(item: ShortcutItem, delta: Int) {
+        val index = orderedAdded.indexOfFirst { it.id == item.id }
+        val swapIndex = index + delta
+        if (index < 0 || swapIndex < 0 || swapIndex >= orderedAdded.size) return
+        val other = orderedAdded[swapIndex]
+        val fromA = cardBounds[item.id]
+        val fromB = cardBounds[other.id]
+        saveOrder(
+            orderedAdded.map { it.id }.toMutableList().apply {
+                set(index, other.id)
+                set(swapIndex, item.id)
+            },
+        )
+        popupFor = null
+        if (fromA != null && fromB != null) {
+            flights = listOf(
+                Flight(item, fromA, adding = false),
+                Flight(other, fromB, adding = false),
             )
         }
+    }
 
-        catalog.filter { it.id !in added.value }
-            .groupBy { it.owner }
-            .forEach { (owner, items) ->
-                item(key = "not_added_$owner") {
-                    SectionTitle(owner)
-                    ShortcutGrid(items = items, onToggle = ::toggle)
+    BackHandler(enabled = popupFor != null) { popupFor = null }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        DetailPage(title = stringResource(R.string.shortcuts), onBack = onBack) {
+            item {
+                SectionTitle(stringResource(R.string.shortcuts))
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    PreferenceSwitch(
+                        title = stringResource(R.string.shortcuts),
+                        summary = stringResource(R.string.shortcuts_summary),
+                        icon = null,
+                        checked = enabled.value,
+                    ) {
+                        enabled.value = it
+                        prefs.putBoolean(KEY_SHORTCUTS_ENABLED, it)
+                        val sections = prefs.getStringSet(PrefKeys.SIDEBAR_SECTION_VISIBILITY).ifEmpty {
+                            setOf("all_apps", "native_quick_functions", "shortcuts", "quick_actions")
+                        }.toMutableSet().apply { if (it) add("shortcuts") else remove("shortcuts") }
+                        prefs.putStringSet(PrefKeys.SIDEBAR_SECTION_VISIBILITY, sections)
+                        prefs.putBoolean(PrefKeys.SIDEBAR_SECTION_CONFIGURED, true)
+                    }
                 }
             }
+
+            item {
+                SectionTitle(stringResource(R.string.shortcuts_added))
+                ShortcutGrid(
+                    items = orderedAdded,
+                    onItemClick = { popupFor = it },
+                    hiddenIds = flights?.map { it.item.id }?.toSet() ?: emptySet(),
+                    onBounds = ::updateBounds,
+                )
+            }
+
+            catalog.filter { it.id !in added.value }
+                .groupBy { it.owner }
+                .forEach { (owner, items) ->
+                    item(key = "not_added_$owner") {
+                        SectionTitle(owner)
+                        ShortcutGrid(
+                            items = items,
+                            onItemClick = ::addShortcut,
+                            hiddenIds = flights?.map { it.item.id }?.toSet() ?: emptySet(),
+                            onBounds = ::updateBounds,
+                        )
+                    }
+                }
+        }
+
+        ShortcutFlyOverlay(
+            flights = flights,
+            cardBounds = cardBounds,
+            onFinished = { flights = null },
+        )
+
+        popupFor?.let { item ->
+            val anchor = cardBounds[item.id]
+            if (anchor != null) {
+                ShortcutActionPopup(
+                    item = item,
+                    anchor = anchor,
+                    canMoveLeft = orderedAdded.indexOfFirst { it.id == item.id } > 0,
+                    canMoveRight = orderedAdded.indexOfFirst { it.id == item.id } < orderedAdded.lastIndex,
+                    onDismiss = { popupFor = null },
+                    onMoveLeft = { moveAdded(item, -1) },
+                    onMoveRight = { moveAdded(item, 1) },
+                    onDelete = { deleteAdded(item) },
+                )
+            }
+        }
     }
 }
 
 @Composable
 private fun ShortcutGrid(
     items: List<ShortcutItem>,
-    onToggle: (ShortcutItem) -> Unit,
+    onItemClick: (ShortcutItem) -> Unit,
+    hiddenIds: Set<String>,
+    onBounds: (String, WindowRect) -> Unit,
 ) {
     if (items.isEmpty()) return
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
@@ -128,7 +262,12 @@ private fun ShortcutGrid(
             items.chunked(columns).forEach { row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
                     row.forEach { item ->
-                        ShortcutCard(item = item, onClick = { onToggle(item) })
+                        ShortcutCard(
+                            item = item,
+                            hidden = item.id in hiddenIds,
+                            onBounds = onBounds,
+                            onClick = { onItemClick(item) },
+                        )
                     }
                 }
             }
@@ -139,6 +278,8 @@ private fun ShortcutGrid(
 @Composable
 private fun ShortcutCard(
     item: ShortcutItem,
+    hidden: Boolean,
+    onBounds: (String, WindowRect) -> Unit,
     onClick: () -> Unit,
 ) {
     Column(
@@ -147,7 +288,10 @@ private fun ShortcutCard(
     ) {
         Card(
             onClick = onClick,
-            modifier = Modifier.size(ShortcutCardWidth),
+            modifier = Modifier
+                .size(ShortcutCardWidth)
+                .onGloballyPositioned { onBounds(item.id, it.boundsInWindow()) }
+                .graphicsLayer { alpha = if (hidden) 0f else 1f },
             cornerRadius = 18.dp,
             insideMargin = PaddingValues(0.dp),
         ) {
@@ -168,6 +312,240 @@ private fun ShortcutCard(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+/** 一次飞行动画批次：每张卡片记录源位置（window 坐标）与飞出屏幕的方向。 */
+private class Flight(
+    val item: ShortcutItem,
+    val from: WindowRect,
+    val adding: Boolean,
+)
+
+@Composable
+private fun ShortcutFlyOverlay(
+    flights: List<Flight>?,
+    cardBounds: Map<String, WindowRect>,
+    onFinished: () -> Unit,
+) {
+    var overlayPosition by remember { mutableStateOf(Offset.Zero) }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clipToBounds()
+            .onGloballyPositioned { coordinates ->
+                val topLeft = coordinates.boundsInWindow().topLeft
+                if (overlayPosition != topLeft) overlayPosition = topLeft
+            },
+    ) {
+        if (flights != null && flights.isNotEmpty()) {
+            key(flights) {
+                val progress = remember { Animatable(0f) }
+                var targets by remember { mutableStateOf<Map<String, WindowRect>?>(null) }
+
+                LaunchedEffect(flights) {
+                    // 交换时多张卡片同步飞行；等待所有新位置布局完成，超时则整批飞出屏幕。
+                    targets = withTimeoutOrNull(TARGET_WAIT_MILLIS) {
+                        coroutineScope {
+                            flights.map { flight ->
+                                async {
+                                    flight.item.id to snapshotFlow { cardBounds[flight.item.id] }
+                                        .first { it != null && it != flight.from }!!
+                                }
+                            }.awaitAll().toMap()
+                        }
+                    }
+                    progress.animateTo(1f, tween(FLY_DURATION_MILLIS, easing = FastOutSlowInEasing))
+                    onFinished()
+                }
+
+                flights.forEach { flight ->
+                    FlightCard(
+                        flight = flight,
+                        target = targets?.get(flight.item.id),
+                        fraction = progress.value,
+                        overlayPosition = overlayPosition,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FlightCard(
+    flight: Flight,
+    target: WindowRect?,
+    fraction: Float,
+    overlayPosition: Offset,
+) {
+    val view = LocalView.current
+    val density = LocalDensity.current
+    val fromCenter = flight.from.center
+    val toCenter = target?.center ?: Offset(
+        x = fromCenter.x,
+        y = if (flight.adding) -view.height.toFloat() else view.height * 2f,
+    )
+    val cardHalf = with(density) { ShortcutCardWidth.toPx() / 2f }
+    val arcHeight = with(density) { FLY_ARC_HEIGHT.toPx() }
+    val dx = toCenter.x - fromCenter.x
+    val dy = toCenter.y - fromCenter.y
+    // 弧线朝运动主轴的垂直方向：横向交换时两张卡分别向上/向下绕行，纵向飞行时顺势加大弧度。
+    val arcDirection = if (abs(dy) >= abs(dx)) {
+        if (dy >= 0f) 1f else -1f
+    } else {
+        if (dx < 0f) 1f else -1f
+    }
+    val arc = sin(PI * fraction).toFloat() * arcHeight * arcDirection
+    val center = Offset(
+        x = fromCenter.x + dx * fraction,
+        y = fromCenter.y + dy * fraction + arc,
+    )
+    val scale = 1f + FLY_SCALE_PEAK * sin(PI * fraction).toFloat()
+
+    Box(
+        modifier = Modifier
+            .offset {
+                IntOffset(
+                    x = (center.x - overlayPosition.x - cardHalf).roundToInt(),
+                    y = (center.y - overlayPosition.y - cardHalf).roundToInt(),
+                )
+            }
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            },
+    ) {
+        Card(
+            modifier = Modifier.size(ShortcutCardWidth),
+            cornerRadius = 18.dp,
+            insideMargin = PaddingValues(0.dp),
+        ) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                ShortcutIcon(flight.item)
+            }
+        }
+    }
+}
+
+/** 已添加卡片的操作弹窗：名称 + 分割线 + 左移/右移/删除。 */
+@Composable
+private fun ShortcutActionPopup(
+    item: ShortcutItem,
+    anchor: WindowRect,
+    canMoveLeft: Boolean,
+    canMoveRight: Boolean,
+    onDismiss: () -> Unit,
+    onMoveLeft: () -> Unit,
+    onMoveRight: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val density = LocalDensity.current
+    var overlaySize by remember { mutableStateOf(IntSize.Zero) }
+    var overlayPosition by remember { mutableStateOf(Offset.Zero) }
+    var cardSize by remember { mutableStateOf(IntSize.Zero) }
+    val appear = remember { Animatable(0f) }
+
+    LaunchedEffect(item) {
+        appear.animateTo(1f, tween(POPUP_ENTER_MILLIS, easing = FastOutSlowInEasing))
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { coordinates ->
+                overlaySize = coordinates.size
+                val topLeft = coordinates.boundsInWindow().topLeft
+                if (overlayPosition != topLeft) overlayPosition = topLeft
+            }
+            .background(
+                MiuixTheme.colorScheme.windowDimming.copy(alpha = POPUP_SCRIM_ALPHA * appear.value),
+            )
+            .clickable(interactionSource = null, indication = null) { onDismiss() },
+    ) {
+        val margin = with(density) { 12.dp.roundToPx() }
+        val fallbackWidth = with(density) { 180.dp.roundToPx() }
+        val fallbackHeight = with(density) { 128.dp.roundToPx() }
+        val popupWidth = if (cardSize.width > 0) cardSize.width else fallbackWidth
+        val popupHeight = if (cardSize.height > 0) cardSize.height else fallbackHeight
+        val anchorCenterX = (anchor.center.x - overlayPosition.x).roundToInt()
+        val anchorBottomY = (anchor.bottom - overlayPosition.y).roundToInt()
+        val anchorTopY = (anchor.top - overlayPosition.y).roundToInt()
+        val left = (anchorCenterX - popupWidth / 2)
+            .coerceIn(margin, (overlaySize.width - popupWidth - margin).coerceAtLeast(margin))
+        val top = if (anchorBottomY + margin + popupHeight <= overlaySize.height) {
+            anchorBottomY + margin
+        } else {
+            (anchorTopY - margin - popupHeight).coerceAtLeast(margin)
+        }
+
+        Box(
+            modifier = Modifier
+                .offset { IntOffset(left, top) }
+                .onGloballyPositioned { cardSize = it.size }
+                .graphicsLayer {
+                    val s = 0.92f + 0.08f * appear.value
+                    scaleX = s
+                    scaleY = s
+                    alpha = appear.value
+                }
+                .clickable(interactionSource = null, indication = null) {
+                    // 消费空白处点击，避免直接关闭。
+                },
+        ) {
+            Card(
+                modifier = Modifier.width(180.dp),
+                cornerRadius = 22.dp,
+                insideMargin = PaddingValues(0.dp),
+            ) {
+                Column {
+                    Text(
+                        text = item.name,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        fontSize = MiuixTheme.textStyles.body2.fontSize,
+                        color = MiuixTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 12.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        IconButton(onClick = onMoveLeft, enabled = canMoveLeft) {
+                            Icon(
+                                imageVector = MiuixIcons.ChevronBackward,
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        }
+                        IconButton(onClick = onMoveRight, enabled = canMoveRight) {
+                            Icon(
+                                imageVector = MiuixIcons.ChevronForward,
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        }
+                        IconButton(onClick = onDelete) {
+                            Icon(
+                                imageVector = MiuixIcons.Delete,
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp),
+                                tint = MiuixTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -523,5 +901,16 @@ private val ShortcutCardWidth = 64.dp
 private val ShortcutGridMinGap = 12.dp
 private val ThirdPartyIconSize = 32.dp
 
+/** 等待目标卡片完成布局的最长时间；超时则视为目标在屏幕外。 */
+private const val TARGET_WAIT_MILLIS = 200L
+
+private const val FLY_DURATION_MILLIS = 420
+private val FLY_ARC_HEIGHT = 48.dp
+private const val FLY_SCALE_PEAK = 0.12f
+
+private const val POPUP_ENTER_MILLIS = 160
+private const val POPUP_SCRIM_ALPHA = 0.16f
+
 private const val KEY_SHORTCUTS_ENABLED = PrefKeys.SHORTCUTS_ENABLED
 private const val KEY_SHORTCUTS_ADDED = PrefKeys.SHORTCUTS_ADDED
+private const val KEY_SHORTCUTS_ORDER = PrefKeys.SHORTCUTS_ORDER

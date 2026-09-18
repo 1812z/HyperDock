@@ -781,7 +781,10 @@ internal object SidebarShortcutController {
         val added = if (SidebarSectionConfig.enabled(CUSTOM_SHORTCUTS, PrefKeys.SHORTCUTS_ENABLED)) {
             ConfigManager.getStringSet(PrefKeys.SHORTCUTS_ADDED, emptySet())
         } else emptySet()
-        val ordered = SidebarShortcutCatalog.orderIds(added)
+        val customOrder = ConfigManager.getString(PrefKeys.SHORTCUTS_ORDER, "")
+            .split(',')
+            .filter { it.isNotBlank() }
+        val ordered = SidebarShortcutCatalog.orderIds(added, customOrder)
         val dividerIndex = filtered.indexOfFirst { isDividerModel(it) }
         val nativeAllApps = if (dividerIndex >= 0) filtered.take(dividerIndex) else filtered
         // Divider is a layout separator, not part of either native section.

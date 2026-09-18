@@ -25,7 +25,20 @@ internal object SidebarShortcutCatalog {
         "alarm" to ("闹钟" to "Alarm"),
     )
 
-    fun orderIds(added: Set<String>): List<String> {
+    /**
+     * 生成注入顺序：模块侧 [io.github.z1812.hyperdock.PrefKeys.SHORTCUTS_ORDER] 记录过的
+     * id 按用户自定义顺序在前；未记录的（旧版本升级、外部写入）按内置规则追加在尾部。
+     */
+    fun orderIds(added: Set<String>, customOrder: List<String>): List<String> {
+        val rank = HashMap<String, Int>(customOrder.size)
+        customOrder.forEachIndexed { index, id -> rank.putIfAbsent(id, index) }
+        val recorded = added.filter { it in rank }.sortedBy { rank[it] ?: Int.MAX_VALUE }
+        val unrecorded = added.filter { it !in rank }
+        if (unrecorded.isEmpty()) return recorded
+        return recorded + defaultOrder(unrecorded)
+    }
+
+    private fun defaultOrder(added: Collection<String>): List<String> {
         val system = added.filter { it in systemLabels }.sortedBy { systemOrder.indexOf(it) }
         val activities = added.filter { it.startsWith("activity:") }.sorted()
         val thirdParty = added.filter { '/' in it && !it.startsWith("activity:") }.sorted()
