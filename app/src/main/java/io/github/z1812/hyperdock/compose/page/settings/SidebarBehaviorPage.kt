@@ -39,6 +39,7 @@ import top.yukonga.miuix.kmp.icon.extended.Back
 internal fun SidebarBehaviorPage(prefs: PrefsRepository, onBack: () -> Unit) {
     val expandAllApps = rememberBooleanPreference(prefs, PrefKeys.SIDEBAR_EXPAND_ALL_APPS, false)
     val panelCache = rememberBooleanPreference(prefs, PrefKeys.SIDEBAR_PANEL_CACHE, false)
+    val staggeredExpand = rememberBooleanPreference(prefs, PrefKeys.SIDEBAR_STAGGERED_EXPAND, false)
     val shortcutsEnabled = rememberBooleanPreference(prefs, PrefKeys.SHORTCUTS_ENABLED, false)
     val quickActionsEnabled = rememberBooleanPreference(prefs, PrefKeys.QUICK_FUNCTIONS_ENABLED, false)
     val visible = rememberStringSetPreference(prefs, PrefKeys.SIDEBAR_SECTION_VISIBILITY)
@@ -93,6 +94,17 @@ internal fun SidebarBehaviorPage(prefs: PrefsRepository, onBack: () -> Unit) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 PreferenceSwitch(stringResource(R.string.sidebar_expand_all_apps), stringResource(R.string.sidebar_expand_all_apps_summary), null, expandAllApps.value) { expandAllApps.value = it; prefs.putBoolean(PrefKeys.SIDEBAR_EXPAND_ALL_APPS, it) }
                 PreferenceSwitch(stringResource(R.string.sidebar_panel_cache), stringResource(R.string.sidebar_panel_cache_summary), null, panelCache.value) { panelCache.value = it; prefs.putBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, it) }
+                if (expandAllApps.value && panelCache.value) {
+                    PreferenceSwitch(
+                        title = stringResource(R.string.sidebar_staggered_expand),
+                        summary = stringResource(R.string.sidebar_staggered_expand_summary),
+                        icon = null,
+                        checked = staggeredExpand.value,
+                    ) {
+                        staggeredExpand.value = it
+                        prefs.putBoolean(PrefKeys.SIDEBAR_STAGGERED_EXPAND, it)
+                    }
+                }
             }
         }
         item {

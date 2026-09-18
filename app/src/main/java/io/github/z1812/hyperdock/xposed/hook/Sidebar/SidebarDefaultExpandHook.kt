@@ -1,7 +1,6 @@
 package io.github.z1812.hyperdock.xposed.hook.Sidebar
 
 import android.app.Application
-import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import io.github.z1812.hyperdock.PrefKeys
@@ -32,9 +31,6 @@ import org.luckypray.dexkit.DexKitBridge
 object SidebarDefaultExpandHook : BaseHook() {
     private const val TAG = "HyperDock[SidebarExpand]"
 
-    /** DockWindowType 普通 Dock（DockAssistantView）。 */
-    private const val DOCK_TYPE_NORMAL = 4
-
     /** 功能开关配置键，必须在 Compose 端与 ConfigManager 的 core 组中同时登记。 */
     const val PREF_ENABLED = PrefKeys.SIDEBAR_EXPAND_ALL_APPS
 
@@ -43,11 +39,8 @@ object SidebarDefaultExpandHook : BaseHook() {
     /** Native expansion itself calls the same release routine as close. */
     private val autoExpanding = AtomicBoolean(false)
     private val sidebarOpen = AtomicBoolean(false)
-    private val releaseTraces = Collections.synchronizedSet(HashSet<Method>())
     private val silentHookInstalled = AtomicBoolean(false)
     private val retainedPanelFields = Collections.synchronizedMap(WeakHashMap<Class<*>, Field>())
-    private val retentionHooked = Collections.synchronizedSet(HashSet<Method>())
-    private val cleanupMethods = Collections.synchronizedSet(HashSet<Method>())
 
     override fun getTag() = TAG
 
@@ -71,19 +64,22 @@ object SidebarDefaultExpandHook : BaseHook() {
         module.hook(openMethod).intercept { chain ->
             val opening = chain.args.getOrNull(1) as? Boolean ?: false
             sidebarOpen.set(opening)
-            log(module, "open-dispatch opening=$opening wrapper=${chain.args.firstOrNull()?.javaClass?.name}")
             if (opening && ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)) {
                 chain.args.firstOrNull()?.let { findRootView(it)?.visibility = View.VISIBLE }
             }
             val result = chain.proceed()
             if (opening && ConfigManager.getBoolean(PREF_ENABLED, false)) {
                 val wrapper = chain.args.firstOrNull() ?: return@intercept result
-                findRootView(wrapper)?.post {
-                    findPanelLayout(wrapper)?.let {
-                        preparePanelHooks(module, it)
-                        log(module, "auto-expand before ${panelState(it)}")
-                        expandAllApps(it)
-                        log(module, "auto-expand after ${panelState(it)}")
+                val panel = findPanelLayout(wrapper)
+                if (panel != null) {
+                    preparePanelHooks(module, panel)
+                    expandAllApps(panel)
+                } else {
+                    findRootView(wrapper)?.post {
+                        findPanelLayout(wrapper)?.let {
+                            preparePanelHooks(module, it)
+                            expandAllApps(it)
+                        }
                     }
                 }
             }
@@ -112,40 +108,9 @@ object SidebarDefaultExpandHook : BaseHook() {
         }.firstOrNull()
 
     private fun preparePanelHooks(module: XposedModule, panelLayout: Any) {
-        // Do not retain the old AllApps View here. Its lifecycle owns a
-        // ViewModelStore/adapter; restoring it after any guessed cleanup hook
-        // leaves a dead panel that immediately collapses on touch.
+        // Install the add hook once; the native panel instance itself is kept
+        // by the release hook when caching is enabled.
         installSilentAddHook(module, panelLayout)
-    }
-
-    private fun installRetentionHooks(module: XposedModule, panelLayout: Any) {
-        panelLayout.javaClass.declaredMethods.filter {
-            it.returnType == Void.TYPE && it.parameterCount == 0
-        }.forEach { method ->
-            if (!retentionHooked.add(method)) return@forEach
-            method.isAccessible = true
-            module.hook(method).intercept { chain ->
-                if (!ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)) {
-                    return@intercept chain.proceed()
-                }
-                val field = retainedPanelFields[chain.thisObject.javaClass]
-                val before = runCatching { field?.get(chain.thisObject) }.getOrNull()
-                if (before != null && cleanupMethods.contains(method)) {
-                    runCatching { field?.set(chain.thisObject, null) }
-                    return@intercept try {
-                        chain.proceed()
-                    } finally {
-                        runCatching { field?.set(chain.thisObject, before) }
-                    }
-                }
-                val result = chain.proceed()
-                if (before != null && runCatching { field?.get(chain.thisObject) }.getOrNull() == null) {
-                    cleanupMethods.add(method)
-                    runCatching { field?.set(chain.thisObject, before) }
-                }
-                result
-            }
-        }
     }
 
     private fun installSilentAddHook(module: XposedModule, panelLayout: Any) {
@@ -171,48 +136,6 @@ object SidebarDefaultExpandHook : BaseHook() {
     private fun isUiProcess(packageName: String, processName: String): Boolean {
         if (processName.isEmpty()) return true
         return processName == packageName || processName == "$packageName:ui"
-    }
-
-    private inline fun installHook(module: XposedModule, name: String, block: () -> Unit) {
-        try {
-            block()
-        } catch (t: Throwable) {
-            logError(module, "$name hook failed: ${Log.getStackTraceString(t)}")
-        }
-    }
-
-    /** Hook `TurboLayout.a0(int x6)`：带尺寸参数的侧边栏创建入口。 */
-    private fun hookExpandedCreate(module: XposedModule, turboLayout: Class<*>) {
-        val method = SidebarExpandMethodDiscovery.sixIntVoid(turboLayout) ?: run {
-            logWarn(module, "TurboLayout.a0(int x6) unavailable")
-            return
-        }
-        log(module, "hooking ${turboLayout.name}.${method.name}")
-        method.isAccessible = true
-        module.hook(method).intercept { chain ->
-            val result = chain.proceed()
-            preparePanelHooks(module, chain.thisObject)
-            runCatching { expandAllAppsIfEnabled(chain.thisObject) }
-                .onFailure { logError(module, "expand after a0 failed: ${it.message}") }
-            result
-        }
-    }
-
-    /** Hook `TurboLayout.c0()`：无参数的侧边栏创建入口。 */
-    private fun hookCreate(module: XposedModule, turboLayout: Class<*>) {
-        val method = SidebarExpandMethodDiscovery.create(turboLayout) ?: run {
-            logWarn(module, "TurboLayout.c0() unavailable")
-            return
-        }
-        log(module, "hooking ${turboLayout.name}.${method.name}")
-        method.isAccessible = true
-        module.hook(method).intercept { chain ->
-            val result = chain.proceed()
-            preparePanelHooks(module, chain.thisObject)
-            runCatching { expandAllAppsIfEnabled(chain.thisObject) }
-                .onFailure { logError(module, "expand after c0 failed: ${it.message}") }
-            result
-        }
     }
 
     /**
@@ -262,12 +185,6 @@ object SidebarDefaultExpandHook : BaseHook() {
         }
     }
 
-    /** 仅在开关开启时触发默认展开。 */
-    private fun expandAllAppsIfEnabled(turbo: Any?) {
-        if (!ConfigManager.getBoolean(PREF_ENABLED, false)) return
-        expandAllApps(turbo)
-    }
-
     /**
      * 触发原生“展开全部应用”流程，但跳过其入场动画。
      * 仅在普通 Dock（type == 4）且尚未展开时执行。
@@ -276,6 +193,9 @@ object SidebarDefaultExpandHook : BaseHook() {
         val target = turbo ?: return
         val dockLayout = findDockLayout(target) ?: return
         if (!isNormalDock(target)) return
+        val staggered = ConfigManager.getBoolean(PREF_ENABLED, false) &&
+            ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false) &&
+            ConfigManager.getBoolean(PrefKeys.SIDEBAR_STAGGERED_EXPAND, false)
         // Native expansion may dispatch an internal close-shaped callback. Keep
         // the lifecycle marked open until the real sidebar open method receives
         // `opening=false`, so cache cannot swallow that callback.
@@ -300,36 +220,34 @@ object SidebarDefaultExpandHook : BaseHook() {
                     // only the real expansion method once so it is reattached;
                     // never iterate all public no-arg methods (that includes
                     // the collapse action on some releases).
-                    val expand = SidebarExpandMethodDiscovery.expansion(target.javaClass)
+                    val expand = findNativePanelExpandMethod(target.javaClass)
                     if (expand != null) {
+                        val previousSilent = silentAdd.get()
                         autoExpanding.set(true)
+                        silentAdd.set(!staggered)
                         runCatching {
                             expand.isAccessible = true
-                            silentAdd.set(false)
                             expand.invoke(target)
                         }.also {
                             autoExpanding.set(false)
+                            silentAdd.set(previousSilent)
                         }
                     }
-                    restorePanelVisibility(cachedPanel)
+                    if (!staggered && ConfigManager.getBoolean(PREF_ENABLED, false)) {
+                        restorePanelVisibility(cachedPanel)
+                    }
                 }
-                dockLayout.javaClass.methods.firstOrNull {
-                    it.returnType == Void.TYPE && it.parameterCount == 1 &&
-                        it.parameterTypes[0] == Boolean::class.javaPrimitiveType
-                }?.let { setter -> runCatching { setter.invoke(dockLayout, true) } }
+                setDockExpanded(dockLayout)
                 return
             }
         }
 
         val previous = silentAdd.get()
-        silentAdd.set(true)
+        silentAdd.set(!staggered)
         autoExpanding.set(true)
         try {
             invokeExpansionCandidates(target)
-            dockLayout.javaClass.methods.firstOrNull {
-                it.returnType == Void.TYPE && it.parameterCount == 1 &&
-                    it.parameterTypes[0] == Boolean::class.javaPrimitiveType
-            }?.let { setter -> runCatching { setter.invoke(dockLayout, true) } }
+            setDockExpanded(dockLayout)
         } finally {
             autoExpanding.set(false)
             silentAdd.set(previous)
@@ -346,15 +264,6 @@ object SidebarDefaultExpandHook : BaseHook() {
         }
         return null
     }
-
-    private fun panelState(target: Any): String = runCatching {
-        val field = findPanelField(target)
-        val panel = field?.get(target) as? View
-        "owner=${target.javaClass.name}@${System.identityHashCode(target)} " +
-            "field=${field?.name} panel=${panel?.javaClass?.name}@${System.identityHashCode(panel)} " +
-            "parent=${panel?.parent?.javaClass?.name} attached=${panel?.isAttachedToWindow} " +
-            "visibility=${panel?.visibility} shown=${panel?.isShown} alpha=${panel?.alpha}"
-    }.getOrElse { "panelState failed: $it" }
 
     private fun allFields(type: Class<*>): Sequence<Field> = sequence {
         var current: Class<*>? = type
@@ -375,10 +284,7 @@ object SidebarDefaultExpandHook : BaseHook() {
     }
 
     private fun invokeExpansionCandidates(target: Any) {
-        val methods = target.javaClass.declaredMethods.filter {
-            it.returnType == Void.TYPE && it.parameterCount == 0 &&
-                Modifier.isPublic(it.modifiers) && !it.isSynthetic
-        }
+        val methods = listOfNotNull(findNativePanelExpandMethod(target.javaClass))
         val panelField = findPanelField(target) ?: return
         panelField.isAccessible = true
         for (method in methods) {
@@ -386,6 +292,21 @@ object SidebarDefaultExpandHook : BaseHook() {
             runCatching { method.isAccessible = true; method.invoke(target) }
             val after = runCatching { panelField?.get(target) }.getOrNull()
             if (after != null && after !== before) return
+        }
+    }
+
+    /** TurboLayout's All Apps attach entry is W() on the current host build. */
+    private fun findNativePanelExpandMethod(clazz: Class<*>): Method? {
+        return runCatching { clazz.getDeclaredMethod("W") }
+            .getOrNull()
+            ?.takeIf { it.returnType == Void.TYPE && it.parameterCount == 0 }
+            ?: SidebarExpandMethodDiscovery.expansion(clazz)
+    }
+
+    private fun setDockExpanded(dockLayout: Any) {
+        runCatching {
+            dockLayout.javaClass.getMethod("setBottomIconSelected", Boolean::class.javaPrimitiveType)
+                .invoke(dockLayout, true)
         }
     }
 
@@ -402,6 +323,9 @@ object SidebarDefaultExpandHook : BaseHook() {
     }
 
     private fun findDockLayout(target: Any): Any? {
+        runCatching {
+            target.javaClass.getMethod("getDockLayout").invoke(target)
+        }.getOrNull()?.let { return it }
         return target.javaClass.methods.asSequence()
             .filter { it.parameterCount == 0 && View::class.java.isAssignableFrom(it.returnType) }
             .mapNotNull { method -> runCatching { method.invoke(target) }.getOrNull() }
@@ -437,17 +361,6 @@ object SidebarDefaultExpandHook : BaseHook() {
                 p[1] == Boolean::class.javaPrimitiveType &&
                 p[2] == Float::class.javaPrimitiveType && p[3] == Float::class.javaPrimitiveType &&
                 Runnable::class.java.isAssignableFrom(p[4]) && Runnable::class.java.isAssignableFrom(p[5])
-        }
-    }
-
-    private fun findSidebarRemoveMethod(loader: ClassLoader): Method? {
-        return SidebarExpandDexDiscovery.find(loader).asSequence().flatMap { type ->
-            runCatching { type.declaredMethods.asSequence() }.getOrDefault(emptySequence())
-        }.firstOrNull { method ->
-            val p = method.parameterTypes
-            method.returnType == Void.TYPE && p.size == 2 &&
-                p[1] == Boolean::class.javaPrimitiveType &&
-                p[0].declaredMethods.any { it.parameterCount == 0 && ViewGroup::class.java.isAssignableFrom(it.returnType) }
         }
     }
 
@@ -505,13 +418,6 @@ object SidebarDefaultExpandHook : BaseHook() {
                 release.isAccessible = true
                 module.hook(release).intercept { chain ->
                     val cacheEnabled = ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)
-                    if (ConfigManager.isDebugLogEnabled()) {
-                        log(module, "release-candidate ${release.toGenericString()} " +
-                            "cache=$cacheEnabled expanding=${autoExpanding.get()} ${panelState(chain.thisObject)}")
-                        if (releaseTraces.add(release)) {
-                            log(module, Log.getStackTraceString(Throwable("release-candidate caller")))
-                        }
-                    }
                     if (!cacheEnabled || autoExpanding.get() || sidebarOpen.get()) {
                         return@intercept chain.proceed()
                     }
@@ -524,33 +430,12 @@ object SidebarDefaultExpandHook : BaseHook() {
                     // here leaves the field pointing at an orphaned View and
                     // the following automatic expand has nothing to mount.
                     if (panel is View && panel.parent == null) {
-                        val cached = panel
-                        val result = chain.proceed()
-                        // R() clears the field and may create a fresh panel.
-                        // Restore the cached instance and attach it to the
-                        // TurboLayout so the next open reuses loaded content.
-                        runCatching {
-                            panelField.set(chain.thisObject, cached)
-                            val owner = chain.thisObject as? ViewGroup
-                            if (owner != null && cached.parent == null) {
-                                owner.addView(cached, cached.layoutParams ?: ViewGroup.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT,
-                                    ViewGroup.LayoutParams.MATCH_PARENT,
-                                ))
-                            }
-                            if (owner != null) {
-                                for (index in owner.childCount - 1 downTo 0) {
-                                    val child = owner.getChildAt(index)
-                                    if (child !== cached && child.javaClass == cached.javaClass) {
-                                        owner.removeViewAt(index)
-                                    }
-                                }
-                            }
-                            restorePanelVisibility(cached)
-                        }
-                        return@intercept result
+                        // R() would clear the cached field. Keep the native
+                        // object for d0()/W() to reuse on the next manual or
+                        // automatic expand; never fake its attachment with
+                        // addView, because TurboLayout also tracks f18876q.
+                        return@intercept null
                     }
-                    log(module, "panel release intercepted cacheEnabled=true panelFound=true")
                     // Keep the native panel and its ViewModel/adapter alive.
                     // Running the release body removes the View from the hierarchy,
                     // and restoring only the field leaves a dead panel on next open.
@@ -559,34 +444,6 @@ object SidebarDefaultExpandHook : BaseHook() {
             }
             log(module, "hooking ${releases.size} panel release methods by DexKit invoke graph")
         }.onFailure { logWarn(module, "DexKit panel release match failed: ${it.message}") }
-    }
-
-    private fun invokeNoArg(target: Any, vararg names: String): Any? {
-        val method = SidebarExpandMethodDiscovery.noArg(target.javaClass, *names) ?: return null
-        method.isAccessible = true
-        return runCatching { method.invoke(target) }.getOrNull()
-    }
-
-    /**
-     * Resolve obfuscated SecurityCenter classes from dex metadata.  The package is
-     * stable across HyperOS releases, while class/method names are not.
-     */
-    private fun findTurboLayout(loader: ClassLoader): Class<*>? {
-        return SidebarExpandDexDiscovery.find(loader).firstOrNull { type ->
-            runCatching {
-                ViewGroup::class.java.isAssignableFrom(type) &&
-                    SidebarExpandMethodDiscovery.sixIntVoid(type) != null &&
-                    SidebarExpandMethodDiscovery.create(type) != null
-            }.getOrDefault(false)
-        }
-    }
-
-    private fun findAppsAddHelper(loader: ClassLoader): Class<*>? {
-        return SidebarExpandDexDiscovery.find(loader).firstOrNull { type ->
-            runCatching {
-                    SidebarExpandMethodDiscovery.appAddHelper(type)
-            }.getOrDefault(false)
-        }
     }
 
 }

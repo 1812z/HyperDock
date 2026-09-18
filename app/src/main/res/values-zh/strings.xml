@@ -38,6 +38,8 @@
     <string name="sidebar_section_move_up">上移</string>
     <string name="sidebar_section_move_down">下移</string>
     <string name="sidebar_panel_cache">缓存全部应用面板</string>
+    <string name="sidebar_staggered_expand">错位展开</string>
+    <string name="sidebar_staggered_expand_summary">全部应用面板以独立动画展开，与侧边栏形成错位效果</string>
     <string name="sidebar_panel_cache_summary">保留已初始化面板，加快后续打开速度</string>
     <string name="all_apps">全部应用</string>
     <string name="all_apps_custom_enabled">启用自定义全部应用</string>

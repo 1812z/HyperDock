@@ -40,6 +40,8 @@
     <string name="sidebar_section_move_up">Move up</string>
     <string name="sidebar_section_move_down">Move down</string>
     <string name="sidebar_panel_cache">Cache all-apps panel</string>
+    <string name="sidebar_staggered_expand">Staggered expansion</string>
+    <string name="sidebar_staggered_expand_summary">Animate the all-apps panel separately for a staggered effect with the sidebar</string>
     <string name="sidebar_panel_cache_summary">Keep the initialized panel for faster subsequent openings</string>
     <string name="all_apps">All apps</string>
     <string name="all_apps_custom_enabled">Use custom app list</string>
