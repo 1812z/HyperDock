@@ -16,6 +16,7 @@ import io.github.z1812.hyperdock.compose.component.SettingsActionWithArrow
 import io.github.z1812.hyperdock.compose.data.PrefsRepository
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Forward
 import top.yukonga.miuix.kmp.icon.extended.GridView
 import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.icon.extended.Sidebar
@@ -57,7 +58,7 @@ internal fun SettingsPage(
                 SettingsActionWithArrow(stringResource(R.string.shortcuts), MiuixIcons.Tune) {
                     onOpenDetail(SettingsDetail.Shortcuts)
                 }
-                SettingsActionWithArrow(stringResource(R.string.quick_functions), MiuixIcons.Tune) {
+                SettingsActionWithArrow(stringResource(R.string.quick_functions), MiuixIcons.Forward) {
                     onOpenDetail(SettingsDetail.QuickFunctions)
                 }
             }
