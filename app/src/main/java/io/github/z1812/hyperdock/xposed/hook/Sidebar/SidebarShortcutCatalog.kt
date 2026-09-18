@@ -6,6 +6,7 @@ internal object SidebarShortcutCatalog {
         "screen_record", "screenshot", "wifi", "bluetooth", "flashlight", "airplane_mode",
         "mobile_data", "location", "auto_rotate", "dnd", "dark_mode", "hotspot", "cast", "mute", "alarm",
     )
+    private val hyperIslandOrder = listOf("hyperisland_motion_photo", "hyperisland_screen_record")
 
     val systemLabels = mapOf(
         "screen_record" to ("录屏" to "Screen recording"),
@@ -23,6 +24,8 @@ internal object SidebarShortcutCatalog {
         "cast" to ("投屏" to "Cast"),
         "mute" to ("静音" to "Mute"),
         "alarm" to ("闹钟" to "Alarm"),
+        "hyperisland_motion_photo" to ("实况录制" to "Live recording"),
+        "hyperisland_screen_record" to ("屏幕录制" to "Screen recording"),
     )
 
     /**
@@ -39,10 +42,11 @@ internal object SidebarShortcutCatalog {
     }
 
     private fun defaultOrder(added: Collection<String>): List<String> {
-        val system = added.filter { it in systemLabels }.sortedBy { systemOrder.indexOf(it) }
+        val system = added.filter { it in systemLabels && it !in hyperIslandOrder }.sortedBy { systemOrder.indexOf(it) }
+        val hyperIsland = added.filter { it in hyperIslandOrder }.sortedBy { hyperIslandOrder.indexOf(it) }
         val activities = added.filter { it.startsWith("activity:") }.sorted()
         val thirdParty = added.filter { '/' in it && !it.startsWith("activity:") }.sorted()
         val others = added.filter { it !in systemLabels && !it.startsWith("activity:") && '/' !in it }.sorted()
-        return system + activities + thirdParty + others
+        return system + hyperIsland + activities + thirdParty + others
     }
 }

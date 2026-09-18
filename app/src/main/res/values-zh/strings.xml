@@ -54,6 +54,8 @@
 
     <string name="shortcuts">快捷方式</string>
     <string name="shortcuts_summary">在全部应用面板与侧边栏展示自定义快捷方式</string>
+    <string name="shortcut_auto_close">自动关闭侧边栏</string>
+    <string name="shortcut_auto_close_summary">点击快捷方式后自动收起侧边栏</string>
     <string name="quick_functions">快速启动</string>
     <string name="quick_functions_summary">从侧边栏快速启动选定的应用 Activity</string>
     <string name="quick_functions_added">已添加</string>
@@ -76,6 +78,10 @@
     <string name="shortcuts_added">已添加</string>
     <string name="shortcuts_not_added">未添加</string>
     <string name="shortcut_owner_system">系统应用</string>
+    <string name="shortcut_owner_hyperisland">HyperIsland</string>
+    <string name="shortcut_hyperisland_motion_photo">实况录制</string>
+    <string name="shortcut_hyperisland_screen_record">屏幕录制</string>
+    <string name="shortcut_hyperisland_requirement">使用此快捷方式需要安装并启用 HyperIsland 中的录屏岛功能</string>
     <string name="shortcut_screen_record">录屏</string>
     <string name="shortcut_screenshot">截图</string>
     <string name="shortcut_wifi">WLAN</string>

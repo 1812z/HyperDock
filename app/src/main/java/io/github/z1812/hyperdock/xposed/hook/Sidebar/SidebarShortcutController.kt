@@ -986,7 +986,10 @@ internal object SidebarShortcutController {
 
     private fun resolveShortcut(id: String): ShortcutTarget? {
         SYSTEM_LABELS[id]?.let { (zh, en) ->
-            return ShortcutTarget("", "", if (SidebarSectionConfig.isChinese()) zh else en, null)
+            val icon = if (id.startsWith("hyperisland_")) {
+                "android.resource://io.github.z1812.hyperdock/drawable/ic_focus_ticker_screen_recorder"
+            } else null
+            return ShortcutTarget("", "", if (SidebarSectionConfig.isChinese()) zh else en, icon)
         }
         if (id.startsWith("activity:")) {
             val spec = parseActivityShortcut(id) ?: return null
@@ -1200,6 +1203,11 @@ internal object SidebarShortcutController {
     private fun findFieldOwner(instance: Any): Any = instance
 
     private fun loadInjectedDrawable(context: android.content.Context, id: String): Drawable? {
+        if (id.startsWith("hyperisland_")) return runCatching {
+            val packageContext = context.createPackageContext("io.github.z1812.hyperdock", Context.CONTEXT_IGNORE_SECURITY)
+            val resId = packageContext.resources.getIdentifier("ic_focus_ticker_screen_recorder", "drawable", packageContext.packageName)
+            packageContext.getDrawable(resId)
+        }.getOrNull()
         val component = ComponentName.unflattenFromString(normalizeComponentId(id)) ?: return null
         return runCatching {
             val info = context.packageManager.getServiceInfo(component, 0)
@@ -1449,8 +1457,22 @@ internal object SidebarShortcutController {
     }
 
     private fun handleInjectedModelClick(model: Any, context: android.content.Context): Boolean {
+        val handled = handleInjectedModelClickInner(model, context)
+        if (handled && ConfigManager.getBoolean(PrefKeys.SHORTCUTS_AUTO_CLOSE, false)) {
+            if (!SidebarCloseHook.closeSidebar()) {
+                Log.w(TAG, "auto close requested but failed")
+            }
+        }
+        return handled
+    }
+
+    private fun handleInjectedModelClickInner(model: Any, context: android.content.Context): Boolean {
         val quickInfo = quickInfoFromModel(model) ?: return false
         val id = normalizeComponentId(quickInfoId(quickInfo).removePrefix(ID_PREFIX))
+        if (id == "hyperisland_motion_photo" || id == "hyperisland_screen_record") {
+            HyperIslandScreenRecorderClient.start(context, id == "hyperisland_motion_photo")
+            return true
+        }
         if (toggleableTiles.contains(id)) {
             val enabled = !(tileState[id] ?: false)
             tileState[id] = enabled

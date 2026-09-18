@@ -1,5 +1,6 @@
 package io.github.z1812.hyperdock.xposed
 
+import io.github.z1812.hyperdock.xposed.hook.Sidebar.SidebarCloseHook
 import io.github.z1812.hyperdock.xposed.hook.Sidebar.SidebarDefaultExpandHook
 import io.github.z1812.hyperdock.xposed.hook.Sidebar.SidebarShortcutHook
 import io.github.z1812.hyperdock.xposed.hook.Sidebar.SidebarQsBridgeHook
@@ -22,6 +23,7 @@ class HyperDockModule : XposedModule() {
             "com.miui.securitycenter" -> {
                 SidebarDefaultExpandHook.init(this, param)
                 SidebarShortcutHook.init(this, param)
+                SidebarCloseHook.init(this, param)
             }
             "com.android.systemui" -> {
                 SidebarQsBridgeHook.init(this, param)

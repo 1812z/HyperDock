@@ -55,6 +55,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -77,12 +78,14 @@ import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.ChevronBackward
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 import top.yukonga.miuix.kmp.icon.extended.Delete
 import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.window.WindowDialog
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -100,11 +103,13 @@ internal fun ShortcutPage(
 ) {
     val context = LocalContext.current
     val enabled = rememberBooleanPreference(prefs, KEY_SHORTCUTS_ENABLED, false)
+    val autoClose = rememberBooleanPreference(prefs, KEY_SHORTCUTS_AUTO_CLOSE, false)
     val added = rememberStringSetPreference(prefs, KEY_SHORTCUTS_ADDED)
     val order = rememberStringPreference(prefs, KEY_SHORTCUTS_ORDER, "")
     val catalog = remember { ShortcutCatalog.all(context) }
     var flights by remember { mutableStateOf<List<Flight>?>(null) }
     var popupFor by remember { mutableStateOf<ShortcutItem?>(null) }
+    var hyperIslandPending by remember { mutableStateOf<ShortcutItem?>(null) }
     val cardBounds = remember { mutableStateMapOf<String, WindowRect>() }
 
     fun updateBounds(id: String, bounds: WindowRect) {
@@ -133,6 +138,10 @@ internal fun ShortcutPage(
         prefs.putStringSet(KEY_SHORTCUTS_ADDED, next)
         saveOrder(orderedAdded.map { it.id } + item.id)
         if (from != null) flights = listOf(Flight(item, from, adding = true))
+    }
+
+    fun requestAdd(item: ShortcutItem) {
+        if (item.id.startsWith("hyperisland_")) hyperIslandPending = item else addShortcut(item)
     }
 
     fun deleteAdded(item: ShortcutItem) {
@@ -189,6 +198,16 @@ internal fun ShortcutPage(
                         prefs.putStringSet(PrefKeys.SIDEBAR_SECTION_VISIBILITY, sections)
                         prefs.putBoolean(PrefKeys.SIDEBAR_SECTION_CONFIGURED, true)
                     }
+                    PreferenceSwitch(
+                        title = stringResource(R.string.shortcut_auto_close),
+                        summary = stringResource(R.string.shortcut_auto_close_summary),
+                        icon = null,
+                        checked = autoClose.value,
+                        enabled = enabled.value,
+                    ) {
+                        autoClose.value = it
+                        prefs.putBoolean(KEY_SHORTCUTS_AUTO_CLOSE, it)
+                    }
                 }
             }
 
@@ -209,12 +228,28 @@ internal fun ShortcutPage(
                         SectionTitle(owner)
                         ShortcutGrid(
                             items = items,
-                            onItemClick = ::addShortcut,
+                            onItemClick = ::requestAdd,
                             hiddenIds = flights?.map { it.item.id }?.toSet() ?: emptySet(),
                             onBounds = ::updateBounds,
                         )
                     }
                 }
+        }
+
+        WindowDialog(
+            show = hyperIslandPending != null,
+            title = hyperIslandPending?.name.orEmpty(),
+            summary = stringResource(R.string.shortcut_hyperisland_requirement),
+            onDismissRequest = { hyperIslandPending = null },
+        ) {
+            TextButton(
+                text = stringResource(R.string.confirm),
+                onClick = {
+                    hyperIslandPending?.let(::addShortcut)
+                    hyperIslandPending = null
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
 
         ShortcutFlyOverlay(
@@ -552,8 +587,13 @@ private fun ShortcutActionPopup(
 @Composable
 private fun ShortcutIcon(item: ShortcutItem) {
     val icon = item.icon
+    val drawableRes = item.drawableRes
     val packageName = item.packageName
     when {
+        drawableRes != null -> Image(
+            painter = painterResource(drawableRes), contentDescription = null,
+            modifier = Modifier.size(28.dp),
+        )
         icon != null -> Icon(
             imageVector = icon,
             contentDescription = null,
@@ -914,3 +954,4 @@ private const val POPUP_SCRIM_ALPHA = 0.16f
 private const val KEY_SHORTCUTS_ENABLED = PrefKeys.SHORTCUTS_ENABLED
 private const val KEY_SHORTCUTS_ADDED = PrefKeys.SHORTCUTS_ADDED
 private const val KEY_SHORTCUTS_ORDER = PrefKeys.SHORTCUTS_ORDER
+private const val KEY_SHORTCUTS_AUTO_CLOSE = PrefKeys.SHORTCUTS_AUTO_CLOSE

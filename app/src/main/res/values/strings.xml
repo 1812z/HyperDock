@@ -57,6 +57,8 @@
     <!-- Shortcuts -->
     <string name="shortcuts">Shortcuts</string>
     <string name="shortcuts_summary">Show custom shortcuts in the all-apps panel and dock</string>
+    <string name="shortcut_auto_close">Auto-close sidebar</string>
+    <string name="shortcut_auto_close_summary">Collapse the sidebar automatically after tapping a shortcut</string>
     <string name="quick_functions">Quick launch</string>
     <string name="quick_functions_summary">Quickly launch selected application activities from the sidebar</string>
     <string name="quick_functions_added">Added</string>
@@ -79,6 +81,10 @@
     <string name="shortcuts_added">Added</string>
     <string name="shortcuts_not_added">Not added</string>
     <string name="shortcut_owner_system">System apps</string>
+    <string name="shortcut_owner_hyperisland">HyperIsland</string>
+    <string name="shortcut_hyperisland_motion_photo">Live recording</string>
+    <string name="shortcut_hyperisland_screen_record">Screen recording</string>
+    <string name="shortcut_hyperisland_requirement">Using this shortcut requires installing and enabling the Screen Recording Island feature in HyperIsland.</string>
     <string name="shortcut_screen_record">Screen recording</string>
     <string name="shortcut_screenshot">Screenshot</string>
     <string name="shortcut_wifi">WLAN</string>

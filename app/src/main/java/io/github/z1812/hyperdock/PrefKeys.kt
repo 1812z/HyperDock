@@ -33,6 +33,7 @@ object PrefKeys {
     const val SHORTCUTS_ENABLED = "shortcuts_enabled"
     const val SHORTCUTS_ADDED = "shortcuts_added"
     const val SHORTCUTS_ORDER = "shortcuts_order"
+    const val SHORTCUTS_AUTO_CLOSE = "shortcuts_auto_close"
 
     // 自定义快捷功能（显式 Activity）
     const val QUICK_FUNCTIONS_ENABLED = "quick_functions_enabled"
@@ -73,6 +74,7 @@ object PrefKeys {
         SHORTCUTS_ENABLED,
         SHORTCUTS_ADDED,
         SHORTCUTS_ORDER,
+        SHORTCUTS_AUTO_CLOSE,
         QUICK_FUNCTIONS_ENABLED,
         QUICK_FUNCTIONS_ADDED,
         QUICK_FUNCTIONS_ICON_URIS,

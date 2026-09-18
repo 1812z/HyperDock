@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.service.quicksettings.TileService
 import androidx.annotation.StringRes
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.annotation.DrawableRes
 import io.github.z1812.hyperdock.R
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Alarm
@@ -29,6 +30,7 @@ data class ShortcutItem(
     val isSystem: Boolean,
     /** 系统开关图标，为空时使用通用占位图标。 */
     val icon: ImageVector? = null,
+    @DrawableRes val drawableRes: Int? = null,
     /** 第三方开关所属应用包名，用于加载应用图标。 */
     val packageName: String? = null,
     /** 第三方 QS Tile 组件名，用于加载该快捷方式自身图标。 */
@@ -62,6 +64,11 @@ object ShortcutCatalog {
         SystemEntry("alarm", R.string.shortcut_alarm, MiuixIcons.Alarm),
     )
 
+    private val HYPER_ISLAND_ENTRIES = listOf(
+        SystemEntry("hyperisland_motion_photo", R.string.shortcut_hyperisland_motion_photo, null),
+        SystemEntry("hyperisland_screen_record", R.string.shortcut_hyperisland_screen_record, null),
+    )
+
     fun all(context: Context): List<ShortcutItem> {
         val systemOwner = context.getString(R.string.shortcut_owner_system)
         val system = SYSTEM_ENTRIES.map { entry ->
@@ -73,7 +80,11 @@ object ShortcutCatalog {
                 icon = entry.icon,
             )
         }
-        return system + thirdPartyTiles(context).sortedBy { it.name.lowercase() }
+        val hyperIslandOwner = context.getString(R.string.shortcut_owner_hyperisland)
+        val hyperIsland = HYPER_ISLAND_ENTRIES.map { entry ->
+            ShortcutItem(entry.id, context.getString(entry.labelRes), hyperIslandOwner, true, drawableRes = R.drawable.ic_focus_ticker_screen_recorder)
+        }
+        return system + hyperIsland + thirdPartyTiles(context).sortedBy { it.name.lowercase() }
     }
 
     private fun thirdPartyTiles(context: Context): List<ShortcutItem> {
