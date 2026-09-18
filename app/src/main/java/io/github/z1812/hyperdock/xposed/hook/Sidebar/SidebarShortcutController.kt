@@ -9,10 +9,14 @@ import android.content.IntentFilter
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.Color
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.View
+import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.TextView
 import io.github.z1812.hyperdock.PrefKeys
@@ -763,12 +767,14 @@ internal object SidebarShortcutController {
         }
         // 每次 StateFlow 发射都代表面板重新展开/刷新，重新读取 SystemUI 的当前状态。
         queriedStates.clear()
-        // setValue 可能被多个观察者/重放路径调用；绝不能叠加第二个自定义栏目。
-        if (original.any { isInjectedTitle(it) || isInjectedShortcut(it) }) return original
+        // StateFlow may replay the already-injected list after configuration changes.
+        // Remove our previous models first so deleting a quick launch entry also
+        // removes its stale icon/title from the sidebar on the next refresh.
+        val source = original.filterNot { isInjectedTitle(it) || isInjectedShortcut(it) }
         // Preserve the configured app whitelist/blacklist. The native list and
         // its state wrapper are both passed through this same injection path.
-        val filtered = filterCustomApps(original)
-        cachedNativeModels = original.toList()
+        val filtered = filterCustomApps(source)
+        cachedNativeModels = source.toList()
         val quickFunctions = if (SidebarSectionConfig.enabled(CUSTOM_QUICK_ACTIONS, PrefKeys.QUICK_FUNCTIONS_ENABLED)) {
             SidebarQuickLaunchConfig.ids()
         } else emptyList()
@@ -980,17 +986,17 @@ internal object SidebarShortcutController {
             return ShortcutTarget("", "", if (SidebarSectionConfig.isChinese()) zh else en, null)
         }
         if (id.startsWith("activity:")) {
-            val componentId = id.removePrefix("activity:")
-            val component = ComponentName.unflattenFromString(normalizeComponentId(componentId)) ?: return null
+            val spec = parseActivityShortcut(id) ?: return null
+            val component = ComponentName.unflattenFromString(normalizeComponentId(spec.componentId)) ?: return null
             val context = appContext() ?: return null
             val activityInfo = runCatching {
                 context.packageManager.getActivityInfo(component, 0)
             }.getOrNull() ?: return null
             val customIcon = ConfigManager.getStringSet(PrefKeys.QUICK_FUNCTIONS_ICON_URIS, emptySet())
-                .firstOrNull { it.startsWith("${component.flattenToString()}=") }
+                .firstOrNull { it.startsWith("${spec.entryId}=") }
                 ?.substringAfter('=')
             val customLabel = ConfigManager.getStringSet(PrefKeys.QUICK_FUNCTIONS_LABELS, emptySet())
-                .firstOrNull { it.startsWith("${component.flattenToString()}=") }
+                .firstOrNull { it.startsWith("${spec.entryId}=") }
                 ?.substringAfter('=')
             return ShortcutTarget(
                 component.packageName,
@@ -1025,6 +1031,21 @@ internal object SidebarShortcutController {
         val iconUri: String?,
     )
 
+    private data class ActivityShortcutSpec(val entryId: String, val componentId: String)
+
+    private fun parseActivityShortcut(id: String): ActivityShortcutSpec? {
+        val payload = id.removePrefix("activity:")
+        val separator = payload.lastIndexOf('|')
+        if (separator <= 0 || separator >= payload.lastIndex) return null
+        return ActivityShortcutSpec(
+            entryId = payload.substring(separator + 1),
+            componentId = payload.substring(0, separator),
+        )
+    }
+
+    private fun activityComponentId(id: String): String =
+        parseActivityShortcut(id)?.componentId ?: id.removePrefix("activity:")
+
     /** QuickInfo.icon 使用 Android 标准资源 URI，避免依赖 MIUI 私有 res:/ 方言。 */
     private fun rawIconUri(
         context: android.content.Context,
@@ -1044,8 +1065,15 @@ internal object SidebarShortcutController {
         return "android.resource://${info.packageName}/${info.icon}"
     }
 
-    private fun isInjectedShortcut(model: Any): Boolean =
-        quickInfoFromModel(model)?.let { quickInfoId(it).startsWith(ID_PREFIX) } == true
+    private fun isInjectedShortcut(model: Any): Boolean = runCatching {
+        val quickInfo = quickInfoFromModel(model) ?: return@runCatching false
+        // The field order is stable on current builds, but use every String
+        // field for stale-model cleanup so a future obfuscation reorder cannot
+        // leave deleted quick launches in the replayed StateFlow list.
+        quickInfoStringFields.any { field ->
+            (field.get(quickInfo) as? String)?.startsWith(ID_PREFIX) == true
+        }
+    }.getOrDefault(false)
 
     private fun findShortcutModel(holder: Any): Any? {
         runCatching { holderCurrentModelField?.get(holder) }.getOrNull()?.let { model ->
@@ -1103,8 +1131,10 @@ internal object SidebarShortcutController {
             ?: return
         val quickInfo = quickInfoFromModel(model) ?: return
         val componentId = quickInfoId(quickInfo).removePrefix(ID_PREFIX)
+        val iconUri = quickInfoValue(quickInfo, 1)
         val drawable = if (componentId.startsWith("activity:")) {
-            loadActivityDrawable(imageView.context, componentId.removePrefix("activity:"))
+            loadIconUri(imageView.context, iconUri)
+                ?: loadActivityDrawable(imageView.context, activityComponentId(componentId))
         } else {
             loadInjectedDrawable(imageView.context, componentId)
         }
@@ -1112,7 +1142,11 @@ internal object SidebarShortcutController {
             ?: imageView.context.getDrawable(android.R.drawable.ic_menu_info_details)
         val enabled = tileState[componentId] == true
         tileViews[componentId] = imageView
-        styleTileIcon(imageView, drawable, enabled)
+        if (componentId.startsWith("activity:")) {
+            styleQuickLaunchIcon(imageView, drawable)
+        } else {
+            styleTileIcon(imageView, drawable, enabled)
+        }
         if (!componentId.startsWith("activity:") && queriedStates.add(componentId)) {
             requestTileState(imageView.context, componentId)
         }
@@ -1190,6 +1224,34 @@ internal object SidebarShortcutController {
         }.getOrNull()
     }
 
+    /** Decode the icon URI written into QuickInfo before falling back to package resources. */
+    private fun loadIconUri(context: android.content.Context, uri: String): Drawable? {
+        if (uri.isBlank()) return null
+        return runCatching {
+            when {
+                uri.startsWith("android.resource://") -> {
+                    val parsed = android.net.Uri.parse(uri)
+                    val resourcePackage = parsed.authority ?: return@runCatching null
+                    val resourceId = parsed.pathSegments.lastOrNull()?.toIntOrNull()
+                        ?: return@runCatching null
+                    val packageContext = context.createPackageContext(
+                        resourcePackage,
+                        android.content.Context.CONTEXT_IGNORE_SECURITY,
+                    )
+                    packageContext.getDrawable(resourceId)
+                }
+                uri.startsWith("content://") || uri.startsWith("file://") -> {
+                    context.contentResolver.openInputStream(android.net.Uri.parse(uri))?.use { input ->
+                        android.graphics.BitmapFactory.decodeStream(input)?.let {
+                            android.graphics.drawable.BitmapDrawable(context.resources, it)
+                        }
+                    }
+                }
+                else -> null
+            }
+        }.getOrNull()
+    }
+
     private fun loadSystemDrawable(context: android.content.Context, id: String): Drawable? {
         val name = when (id) {
             "wifi" -> "stat_sys_wifi"
@@ -1234,6 +1296,77 @@ internal object SidebarShortcutController {
         source?.mutate()?.apply {
             setTint(Color.parseColor(if (enabled) "#3982FA" else "#F5F5F7"))
             alpha = if (enabled) 255 else 204
+        }
+        imageView.setImageDrawable(source?.let { cropQuickLaunchDrawable(imageView, it) })
+    }
+
+    /** Remove large opaque white margins commonly present in adaptive app icons. */
+    private fun cropQuickLaunchDrawable(imageView: ImageView, source: Drawable): Drawable {
+        val size = 256
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        source.setBounds(0, 0, size, size)
+        source.draw(Canvas(bitmap))
+        val pixels = IntArray(size * size)
+        bitmap.getPixels(pixels, 0, size, 0, 0, size, size)
+        var left = size
+        var top = size
+        var right = -1
+        var bottom = -1
+        for (y in 0 until size) for (x in 0 until size) {
+            val color = pixels[y * size + x]
+            val alpha = color ushr 24
+            val red = color ushr 16 and 0xff
+            val green = color ushr 8 and 0xff
+            val blue = color and 0xff
+            val nonWhite = red < 245 || green < 245 || blue < 245
+            if (alpha > 20 && nonWhite) {
+                left = minOf(left, x)
+                top = minOf(top, y)
+                right = maxOf(right, x)
+                bottom = maxOf(bottom, y)
+            }
+        }
+        if (right < left || bottom < top || right - left < 24 || bottom - top < 24) {
+            return source
+        }
+        // CENTER_CROP only crops the View. If the source itself contains white
+        // margins, first create a square crop around the visible artwork.
+        val contentWidth = right - left + 1
+        val contentHeight = bottom - top + 1
+        val side = maxOf(contentWidth, contentHeight).coerceAtMost(size)
+        val centerX = (left + right) / 2
+        val centerY = (top + bottom) / 2
+        val cropLeft = (centerX - side / 2).coerceIn(0, size - side)
+        val cropTop = (centerY - side / 2).coerceIn(0, size - side)
+        val cropped = Bitmap.createBitmap(
+            bitmap,
+            cropLeft,
+            cropTop,
+            side,
+            side,
+        )
+        return BitmapDrawable(imageView.resources, cropped)
+    }
+
+    /**
+     * Quick launch uses the real application artwork rather than the monochrome
+     * QS tile treatment. Keep a square viewport and let CENTER_CROP clip excess
+     * artwork, matching the sidebar's cover-style icon presentation.
+     */
+    private fun styleQuickLaunchIcon(imageView: ImageView, source: Drawable?) {
+        imageView.layoutParams = imageView.layoutParams?.apply {
+            width = ViewGroup.LayoutParams.MATCH_PARENT
+            height = ViewGroup.LayoutParams.MATCH_PARENT
+        }
+        imageView.setPadding(0, 0, 0, 0)
+        imageView.translationX = 0f
+        imageView.scaleType = ImageView.ScaleType.CENTER_CROP
+        imageView.background = null
+        imageView.imageTintList = null
+        imageView.imageTintMode = null
+        source?.mutate()?.apply {
+            clearColorFilter()
+            alpha = 255
         }
         imageView.setImageDrawable(source)
     }
@@ -1325,7 +1458,7 @@ internal object SidebarShortcutController {
             }
         }
         if (id.startsWith("activity:")) {
-            val component = ComponentName.unflattenFromString(id.removePrefix("activity:"))
+            val component = ComponentName.unflattenFromString(activityComponentId(id))
                 ?: return true
             val intent = Intent().setComponent(component)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -1410,7 +1543,8 @@ internal object SidebarShortcutController {
     // ── 标题头渲染补丁 ────────────────────────────────────────────────────────
 
     private fun isInjectedTitle(title: Any?): Boolean =
-        title != null && injectedTitles.contains(title)
+        title != null && titleClassMatches(title) &&
+            (injectedTitles.contains(title) || readTitleTextRes(title) == TITLE_SENTINEL)
 
     private fun readTitleResource(title: Any): Int? =
         runCatching {

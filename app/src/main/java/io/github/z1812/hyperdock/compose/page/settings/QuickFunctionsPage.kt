@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.net.Uri
+import java.util.UUID
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -27,6 +28,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -66,6 +69,7 @@ private data class QuickActivity(
     val component: ComponentName,
     val label: String,
     val packageLabel: String,
+    val id: String = component.flattenToString(),
 )
 
 private enum class QuickFunctionsView { Root, Apps, Activities }
@@ -105,9 +109,13 @@ internal fun QuickFunctionsPage(
 
     fun savePending() {
         pending?.let { activity ->
+            val entryId = "q" + UUID.randomUUID().toString().replace("-", "").take(8)
+            val entry = "$entryId|${activity.component.flattenToString()}"
+            val next = saved.value + entry
+            saved.value = next
             prefs.putStringSet(
                 PrefKeys.QUICK_FUNCTIONS_ADDED,
-                saved.value + activity.component.flattenToString(),
+                next,
             )
         }
         pending = null
@@ -143,11 +151,16 @@ internal fun QuickFunctionsPage(
                 uri,
                 Intent.FLAG_GRANT_READ_URI_PERMISSION,
             )
+            context.grantUriPermission(
+                "com.miui.securitycenter",
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
         }
         editing?.let { activity ->
             editIconUri = uri.toString()
-            val next = iconUris.value.filterNot { it.startsWith("${activity.component.flattenToString()}=") }.toMutableSet()
-            next += "${activity.component.flattenToString()}=${uri}"
+            val next = iconUris.value.filterNot { it.startsWith("${activity.id}=") }.toMutableSet()
+            next += "${activity.id}=${uri}"
             iconUris.value = next
             prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_ICON_URIS, next)
         }
@@ -170,10 +183,18 @@ internal fun QuickFunctionsPage(
         },
         floatingActionButton = if (view == QuickFunctionsView.Root) {
             {
-                Column(horizontalAlignment = androidx.compose.ui.Alignment.End) {
+                Column(
+                    modifier = Modifier.padding(end = 8.dp, bottom = 12.dp),
+                    horizontalAlignment = androidx.compose.ui.Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
                     AnimatedVisibility(expanded) {
-                        Card(modifier = Modifier.padding(bottom = 12.dp)) {
-                            Column {
+                        Card(
+                            modifier = Modifier.width(236.dp).wrapContentHeight(),
+                            cornerRadius = 22.dp,
+                            insideMargin = PaddingValues(8.dp),
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 SettingsActionWithArrow(stringResource(R.string.quick_functions_import)) {
                                     expanded = false
                                     importLauncher.launch(arrayOf("application/json", "text/plain"))
@@ -189,8 +210,10 @@ internal fun QuickFunctionsPage(
                             }
                         }
                     }
-                    FloatingActionButton(onClick = { expanded = !expanded }) {
-                        Text("+", color = Color.White)
+                    FloatingActionButton(
+                        onClick = { expanded = !expanded },
+                    ) {
+                        Text("+", color = Color.White, fontSize = 40.sp)
                     }
                 }
             }
@@ -222,9 +245,12 @@ internal fun QuickFunctionsPage(
                 } else {
                     item {
                         QuickFunctionsGrid(
-                            items = saved.value.mapNotNull { componentId ->
-                                resolveActivity(context, ComponentName.unflattenFromString(componentId))?.let { activity ->
-                                    val custom = labels.value.firstOrNull { it.startsWith("$componentId=") }?.substringAfter('=')
+                            items = saved.value.filter { '|' in it }.mapNotNull { entry ->
+                                val parts = entry.split('|', limit = 2)
+                                val entryId = parts.first()
+                                val componentId = parts[1]
+                                resolveActivity(context, ComponentName.unflattenFromString(componentId))?.copy(id = entryId)?.let { activity ->
+                                    val custom = labels.value.firstOrNull { it.startsWith("$entryId=") }?.substringAfter('=')
                                     if (custom.isNullOrBlank()) activity else activity.copy(label = custom)
                                 }
                             },
@@ -232,7 +258,7 @@ internal fun QuickFunctionsPage(
                             onClick = { activity ->
                                 editing = activity
                                 editName = activity.label
-                                editIconUri = iconUris.value.firstOrNull { it.startsWith("${activity.component.flattenToString()}=") }?.substringAfter('=')
+                                editIconUri = iconUris.value.firstOrNull { it.startsWith("${activity.id}=") }?.substringAfter('=')
                             },
                         )
                     }
@@ -339,10 +365,16 @@ internal fun QuickFunctionsPage(
                     text = stringResource(R.string.delete),
                     onClick = {
                         editing?.let { activity ->
-                            val id = activity.component.flattenToString()
-                            prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_ADDED, saved.value - id)
-                            prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_ICON_URIS, iconUris.value.filterNot { it.startsWith("$id=") }.toSet())
-                            prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_LABELS, labels.value.filterNot { it.startsWith("$id=") }.toSet())
+                            val id = activity.id
+                            val nextSaved = saved.value.filterNot { it == id || it.startsWith("$id|") }.toSet()
+                            val nextIcons = iconUris.value.filterNot { it.startsWith("$id=") }.toSet()
+                            val nextLabels = labels.value.filterNot { it.startsWith("$id=") }.toSet()
+                            saved.value = nextSaved
+                            iconUris.value = nextIcons
+                            labels.value = nextLabels
+                            prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_ADDED, nextSaved)
+                            prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_ICON_URIS, nextIcons)
+                            prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_LABELS, nextLabels)
                         }
                         editing = null
                     },
@@ -351,7 +383,7 @@ internal fun QuickFunctionsPage(
                 Button(
                     onClick = {
                         editing?.let { activity ->
-                            val id = activity.component.flattenToString()
+                            val id = activity.id
                             val next = labels.value.filterNot { it.startsWith("$id=") }.toMutableSet()
                             if (editName.isNotBlank()) next += "$id=${editName.trim()}"
                             prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_LABELS, next)
@@ -417,7 +449,7 @@ private fun QuickFunctionsGrid(
                                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                     QuickFunctionIcon(
                                         activity,
-                                        iconUris.firstOrNull { it.startsWith("${activity.component.flattenToString()}=") }?.substringAfter('='),
+                                        iconUris.firstOrNull { it.startsWith("${activity.id}=") }?.substringAfter('='),
                                     )
                                 }
                             }
@@ -452,7 +484,12 @@ private fun QuickFunctionIcon(activity: QuickActivity, customUri: String? = null
         }.getOrNull()
     }
     if (bitmap != null) {
-        Image(bitmap.asImageBitmap(), contentDescription = activity.label, modifier = Modifier.size(42.dp))
+        Image(
+            bitmap.asImageBitmap(),
+            contentDescription = activity.label,
+            modifier = Modifier.size(42.dp),
+            contentScale = ContentScale.Crop,
+        )
     } else {
         Text("•", fontSize = 32.sp, color = MiuixTheme.colorScheme.primary)
     }

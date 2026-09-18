@@ -8,7 +8,13 @@ internal object SidebarQuickLaunchConfig {
     fun ids(): List<String> = ConfigManager.getStringSet(PrefKeys.QUICK_FUNCTIONS_ADDED, emptySet())
         .asSequence()
         .filter(String::isNotBlank)
-        .map { "activity:$it" }
+        .filter { '|' in it }
+        .map { entry ->
+            val parts = entry.split('|', limit = 2)
+            val id = parts.first()
+            val component = parts[1]
+            "activity:$component|$id"
+        }
         .sorted()
         .toList()
 }
