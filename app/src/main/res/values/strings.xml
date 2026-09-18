@@ -72,6 +72,8 @@
     <string name="quick_functions_activity">Activity class</string>
     <string name="quick_functions_choose_icon">Choose icon</string>
     <string name="quick_functions_export">Export quick launch</string>
+    <string name="quick_functions_no_activities">No exported activities found</string>
+    <string name="quick_functions_search_activities">Search activities</string>
     <string name="delete">Delete</string>
     <string name="next">Next</string>
     <string name="shortcuts_added">Added</string>

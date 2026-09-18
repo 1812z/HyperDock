@@ -1,5 +1,8 @@
 package io.github.z1812.hyperdock.compose.page.settings
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -94,7 +97,11 @@ internal fun SidebarBehaviorPage(prefs: PrefsRepository, onBack: () -> Unit) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 PreferenceSwitch(stringResource(R.string.sidebar_expand_all_apps), stringResource(R.string.sidebar_expand_all_apps_summary), null, expandAllApps.value) { expandAllApps.value = it; prefs.putBoolean(PrefKeys.SIDEBAR_EXPAND_ALL_APPS, it) }
                 PreferenceSwitch(stringResource(R.string.sidebar_panel_cache), stringResource(R.string.sidebar_panel_cache_summary), null, panelCache.value) { panelCache.value = it; prefs.putBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, it) }
-                if (expandAllApps.value && panelCache.value) {
+                AnimatedVisibility(
+                    visible = expandAllApps.value && panelCache.value,
+                    enter = slideInVertically { height -> -height },
+                    exit = slideOutVertically { height -> -height },
+                ) {
                     PreferenceSwitch(
                         title = stringResource(R.string.sidebar_staggered_expand),
                         summary = stringResource(R.string.sidebar_staggered_expand_summary),

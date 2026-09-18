@@ -5,36 +5,33 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.drawable.Drawable
 import android.net.Uri
-import java.util.UUID
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -42,7 +39,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.z1812.hyperdock.PrefKeys
@@ -54,39 +53,57 @@ import io.github.z1812.hyperdock.compose.component.SettingsActionWithArrow
 import io.github.z1812.hyperdock.compose.data.PrefsRepository
 import io.github.z1812.hyperdock.compose.data.rememberBooleanPreference
 import io.github.z1812.hyperdock.compose.data.rememberStringSetPreference
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.FloatingActionButton
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.InputField
+import top.yukonga.miuix.kmp.basic.SearchBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.basic.ArrowRight
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowBottomSheet
 import top.yukonga.miuix.kmp.window.WindowDialog
+import java.util.UUID
 
 private data class QuickActivity(
     val component: ComponentName,
     val label: String,
-    val packageLabel: String,
     val id: String = component.flattenToString(),
 )
 
-private enum class QuickFunctionsView { Root, Apps, Activities }
+private data class QuickPickerApp(
+    val packageName: String,
+    val label: String,
+    val icon: Bitmap,
+)
+
+private fun addQuickActivity(prefs: PrefsRepository, component: ComponentName): Set<String> {
+    val entryId = "q" + UUID.randomUUID().toString().replace("-", "").take(8)
+    val next = prefs.getStringSet(PrefKeys.QUICK_FUNCTIONS_ADDED) + "$entryId|${component.flattenToString()}"
+    prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_ADDED, next)
+    return next
+}
 
 @Composable
 internal fun QuickFunctionsPage(
     prefs: PrefsRepository,
     onBack: () -> Unit,
+    onOpenApps: () -> Unit,
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
     val enabled = rememberBooleanPreference(prefs, PrefKeys.QUICK_FUNCTIONS_ENABLED, false)
     val saved = rememberStringSetPreference(prefs, PrefKeys.QUICK_FUNCTIONS_ADDED)
     val iconUris = rememberStringSetPreference(prefs, PrefKeys.QUICK_FUNCTIONS_ICON_URIS)
     val labels = rememberStringSetPreference(prefs, PrefKeys.QUICK_FUNCTIONS_LABELS)
-    var view by remember { mutableStateOf(QuickFunctionsView.Root) }
     var expanded by remember { mutableStateOf(false) }
-    var selectedPackage by remember { mutableStateOf<String?>(null) }
     var pending by remember { mutableStateOf<QuickActivity?>(null) }
     var showSaveSheet by remember { mutableStateOf(false) }
     var showManualSheet by remember { mutableStateOf(false) }
@@ -97,29 +114,23 @@ internal fun QuickFunctionsPage(
     var manualClass by remember { mutableStateOf("") }
     var manualName by remember { mutableStateOf("") }
 
-    val apps = remember(context) { launcherApps(context) }
-    val activities = remember(context, selectedPackage) {
-        selectedPackage?.let { packageActivities(context, it) }.orEmpty()
+    val resolvedItems = produceState<List<QuickActivity>?>(initialValue = null, saved.value, labels.value) {
+        value = withContext(Dispatchers.IO) {
+            saved.value.filter { '|' in it }.mapNotNull { entry ->
+                val entryId = entry.substringBefore('|')
+                resolveActivity(context, ComponentName.unflattenFromString(entry.substringAfter('|')))
+                    ?.copy(id = entryId)
+                    ?.let { activity ->
+                        val custom = labels.value.firstOrNull { it.startsWith("$entryId=") }?.substringAfter('=')
+                        if (custom.isNullOrBlank()) activity else activity.copy(label = custom)
+                    }
+            }
+        }
     }
 
     fun requestSave(activity: QuickActivity) {
         pending = activity
         showSaveSheet = true
-    }
-
-    fun savePending() {
-        pending?.let { activity ->
-            val entryId = "q" + UUID.randomUUID().toString().replace("-", "").take(8)
-            val entry = "$entryId|${activity.component.flattenToString()}"
-            val next = saved.value + entry
-            saved.value = next
-            prefs.putStringSet(
-                PrefKeys.QUICK_FUNCTIONS_ADDED,
-                next,
-            )
-        }
-        pending = null
-        showSaveSheet = false
     }
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -166,141 +177,86 @@ internal fun QuickFunctionsPage(
         }
     }
 
-    val title = when (view) {
-        QuickFunctionsView.Root -> stringResource(R.string.quick_functions)
-        QuickFunctionsView.Apps -> stringResource(R.string.quick_functions_select_app)
-        QuickFunctionsView.Activities -> stringResource(R.string.quick_functions_select_activity)
-    }
-
     DetailPage(
-        title = title,
-        onBack = {
-            when (view) {
-                QuickFunctionsView.Root -> onBack()
-                QuickFunctionsView.Apps -> { view = QuickFunctionsView.Root; selectedPackage = null }
-                QuickFunctionsView.Activities -> { view = QuickFunctionsView.Apps; selectedPackage = null }
+        title = stringResource(R.string.quick_functions),
+        onBack = onBack,
+        floatingActionButton = {
+            Column(
+                modifier = Modifier.padding(end = 8.dp, bottom = 12.dp),
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                AnimatedVisibility(expanded) {
+                    Card(
+                        modifier = Modifier.width(236.dp).wrapContentHeight(),
+                        cornerRadius = 22.dp,
+                        insideMargin = PaddingValues(8.dp),
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            SettingsActionWithArrow(stringResource(R.string.quick_functions_import)) {
+                                expanded = false
+                                importLauncher.launch(arrayOf("application/json", "text/plain"))
+                            }
+                            SettingsActionWithArrow(stringResource(R.string.quick_functions_add_manual)) {
+                                expanded = false
+                                showManualSheet = true
+                            }
+                            SettingsActionWithArrow(stringResource(R.string.quick_functions_select_app)) {
+                                expanded = false
+                                onOpenApps()
+                            }
+                        }
+                    }
+                }
+                FloatingActionButton(
+                    onClick = { expanded = !expanded },
+                ) {
+                    Text("+", color = Color.White, fontSize = 40.sp)
+                }
             }
         },
-        floatingActionButton = if (view == QuickFunctionsView.Root) {
-            {
-                Column(
-                    modifier = Modifier.padding(end = 8.dp, bottom = 12.dp),
-                    horizontalAlignment = androidx.compose.ui.Alignment.End,
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    AnimatedVisibility(expanded) {
-                        Card(
-                            modifier = Modifier.width(236.dp).wrapContentHeight(),
-                            cornerRadius = 22.dp,
-                            insideMargin = PaddingValues(8.dp),
-                        ) {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                SettingsActionWithArrow(stringResource(R.string.quick_functions_import)) {
-                                    expanded = false
-                                    importLauncher.launch(arrayOf("application/json", "text/plain"))
-                                }
-                                SettingsActionWithArrow(stringResource(R.string.quick_functions_add_manual)) {
-                                    expanded = false
-                                    showManualSheet = true
-                                }
-                                SettingsActionWithArrow(stringResource(R.string.quick_functions_select_app)) {
-                                    expanded = false
-                                    view = QuickFunctionsView.Apps
-                                }
-                            }
-                        }
-                    }
-                    FloatingActionButton(
-                        onClick = { expanded = !expanded },
-                    ) {
-                        Text("+", color = Color.White, fontSize = 40.sp)
-                    }
-                }
-            }
-        } else null,
     ) {
-        when (view) {
-            QuickFunctionsView.Root -> {
-                item {
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        PreferenceSwitch(
-                            title = stringResource(R.string.quick_functions),
-                            summary = stringResource(R.string.quick_functions_summary),
-                            icon = null,
-                            checked = enabled.value,
-                        ) {
-                            enabled.value = it
-                            prefs.putBoolean(PrefKeys.QUICK_FUNCTIONS_ENABLED, it)
-                            val sections = prefs.getStringSet(PrefKeys.SIDEBAR_SECTION_VISIBILITY).ifEmpty {
-                                setOf("all_apps", "native_quick_functions", "shortcuts", "quick_actions")
-                            }.toMutableSet().apply { if (it) add("quick_actions") else remove("quick_actions") }
-                            prefs.putStringSet(PrefKeys.SIDEBAR_SECTION_VISIBILITY, sections)
-                            prefs.putBoolean(PrefKeys.SIDEBAR_SECTION_CONFIGURED, true)
-                        }
-                    }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                PreferenceSwitch(
+                    title = stringResource(R.string.quick_functions),
+                    summary = stringResource(R.string.quick_functions_summary),
+                    icon = null,
+                    checked = enabled.value,
+                ) {
+                    enabled.value = it
+                    prefs.putBoolean(PrefKeys.QUICK_FUNCTIONS_ENABLED, it)
+                    val sections = prefs.getStringSet(PrefKeys.SIDEBAR_SECTION_VISIBILITY).ifEmpty {
+                        setOf("all_apps", "native_quick_functions", "shortcuts", "quick_actions")
+                    }.toMutableSet().apply { if (it) add("quick_actions") else remove("quick_actions") }
+                    prefs.putStringSet(PrefKeys.SIDEBAR_SECTION_VISIBILITY, sections)
+                    prefs.putBoolean(PrefKeys.SIDEBAR_SECTION_CONFIGURED, true)
                 }
-                item { SectionTitle(stringResource(R.string.quick_functions_added)) }
-                if (saved.value.isEmpty()) {
-                    item { Text(stringResource(R.string.quick_functions_empty)) }
+            }
+        }
+        item { SectionTitle(stringResource(R.string.quick_functions_added)) }
+        if (saved.value.isEmpty()) {
+            item { Text(stringResource(R.string.quick_functions_empty)) }
+        } else {
+            item {
+                val items = resolvedItems.value
+                if (items == null) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(size = 28.dp)
+                    }
                 } else {
-                    item {
-                        QuickFunctionsGrid(
-                            items = saved.value.filter { '|' in it }.mapNotNull { entry ->
-                                val parts = entry.split('|', limit = 2)
-                                val entryId = parts.first()
-                                val componentId = parts[1]
-                                resolveActivity(context, ComponentName.unflattenFromString(componentId))?.copy(id = entryId)?.let { activity ->
-                                    val custom = labels.value.firstOrNull { it.startsWith("$entryId=") }?.substringAfter('=')
-                                    if (custom.isNullOrBlank()) activity else activity.copy(label = custom)
-                                }
-                            },
-                            iconUris = iconUris.value,
-                            onClick = { activity ->
-                                editing = activity
-                                editName = activity.label
-                                editIconUri = iconUris.value.firstOrNull { it.startsWith("${activity.id}=") }?.substringAfter('=')
-                            },
-                        )
-                    }
-                }
-            }
-            QuickFunctionsView.Apps -> {
-                item {
-                    AnimatedContent(view, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "quick_functions_apps") { current ->
-                        if (current == QuickFunctionsView.Apps) {
-                            Column {
-                                apps.forEach { app ->
-                                    AppPickerRow(app.first, app.second) {
-                                        selectedPackage = app.first
-                                        view = QuickFunctionsView.Activities
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            QuickFunctionsView.Activities -> {
-                item {
-                    AnimatedContent(view, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "quick_functions_activities") { current ->
-                        if (current == QuickFunctionsView.Activities) {
-                            Column {
-                                activities.forEach { activity ->
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        QuickFunctionIcon(activity)
-                                        Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                                            Text(activity.label, maxLines = 1)
-                                            Text(activity.component.className, maxLines = 1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                                        }
-                                        Button(onClick = { requestSave(activity) }) { Text("+") }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    QuickFunctionsGrid(
+                        items = items,
+                        iconUris = iconUris.value,
+                        onClick = { activity ->
+                            editing = activity
+                            editName = activity.label
+                            editIconUri = iconUris.value.firstOrNull { it.startsWith("${activity.id}=") }?.substringAfter('=')
+                        },
+                    )
                 }
             }
         }
@@ -316,7 +272,14 @@ internal fun QuickFunctionsPage(
             Text(pending?.component?.flattenToString().orEmpty(), color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 TextButton(text = stringResource(R.string.cancel), onClick = { showSaveSheet = false; pending = null }, modifier = Modifier.weight(1f))
-                Button(onClick = ::savePending, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.save)) }
+                Button(
+                    onClick = {
+                        pending?.let { activity -> saved.value = addQuickActivity(prefs, activity.component) }
+                        pending = null
+                        showSaveSheet = false
+                    },
+                    modifier = Modifier.weight(1f),
+                ) { Text(stringResource(R.string.save)) }
             }
         }
     }
@@ -386,6 +349,7 @@ internal fun QuickFunctionsPage(
                             val id = activity.id
                             val next = labels.value.filterNot { it.startsWith("$id=") }.toMutableSet()
                             if (editName.isNotBlank()) next += "$id=${editName.trim()}"
+                            labels.value = next
                             prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_LABELS, next)
                         }
                         editing = null
@@ -398,17 +362,255 @@ internal fun QuickFunctionsPage(
     }
 }
 
-private fun launcherApps(context: Context): List<Pair<String, String>> {
+@Composable
+internal fun QuickAppsPickerPage(
+    onBack: () -> Unit,
+    onPickApp: (packageName: String, label: String) -> Unit,
+) {
+    val context = LocalContext.current
+    val appsState = produceState<List<QuickPickerApp>?>(initialValue = null, context) {
+        value = withContext(Dispatchers.IO) { loadLaunchableApps(context) }
+    }
+    val apps = appsState.value
+    var query by remember { mutableStateOf("") }
+    var searchExpanded by remember { mutableStateOf(false) }
+    val filteredApps = remember(apps, query) {
+        val source = apps ?: emptyList()
+        val needle = query.trim().lowercase()
+        if (needle.isEmpty()) source
+        else source.filter {
+            it.label.lowercase().contains(needle) || it.packageName.lowercase().contains(needle)
+        }
+    }
+
+    DetailPage(title = stringResource(R.string.quick_functions_select_app), onBack = onBack) {
+        item {
+            SearchBar(
+                inputField = {
+                    InputField(
+                        query = query,
+                        onQueryChange = { query = it },
+                        onSearch = {},
+                        expanded = searchExpanded,
+                        onExpandedChange = { searchExpanded = it },
+                        label = stringResource(R.string.search_apps),
+                    )
+                },
+                onExpandedChange = { searchExpanded = it },
+                expanded = searchExpanded,
+                outsideEndAction = {
+                    Text(
+                        text = stringResource(R.string.cancel),
+                        modifier = Modifier
+                            .padding(horizontal = 12.dp)
+                            .clickable(
+                                interactionSource = null,
+                                indication = null,
+                            ) { searchExpanded = false },
+                        color = MiuixTheme.colorScheme.primary,
+                    )
+                },
+            ) {}
+        }
+        if (apps == null) {
+            item {
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(size = 28.dp)
+                }
+            }
+        } else if (filteredApps.isEmpty()) {
+            item { Text(stringResource(R.string.all_apps_no_apps)) }
+        } else {
+            items(filteredApps.size, key = { filteredApps[it].packageName }) { index ->
+                val app = filteredApps[index]
+                Card(modifier = Modifier.fillMaxWidth(), insideMargin = PaddingValues(0.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onPickApp(app.packageName, app.label) }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        AppIcon(app.icon, Modifier.size(44.dp))
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = app.label,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MiuixTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = app.packageName,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                fontSize = MiuixTheme.textStyles.body2.fontSize,
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Icon(
+                            imageVector = MiuixIcons.Basic.ArrowRight,
+                            contentDescription = null,
+                            modifier = Modifier.size(width = 10.dp, height = 16.dp),
+                            tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun QuickActivitiesPickerPage(
+    prefs: PrefsRepository,
+    packageName: String,
+    packageLabel: String,
+    onBack: () -> Unit,
+    onAdded: () -> Unit,
+) {
+    val context = LocalContext.current
+    val saved = rememberStringSetPreference(prefs, PrefKeys.QUICK_FUNCTIONS_ADDED)
+    val activitiesState = produceState<List<QuickActivity>?>(initialValue = null, packageName) {
+        value = withContext(Dispatchers.IO) { packageActivities(context, packageName) }
+    }
+    val activities = activitiesState.value
+    var query by remember { mutableStateOf("") }
+    var searchExpanded by remember { mutableStateOf(false) }
+    var pending by remember { mutableStateOf<QuickActivity?>(null) }
+    var showSaveSheet by remember { mutableStateOf(false) }
+    val filteredActivities = remember(activities, query) {
+        val source = activities ?: emptyList()
+        val needle = query.trim().lowercase()
+        if (needle.isEmpty()) source
+        else source.filter {
+            it.label.lowercase().contains(needle) || it.component.className.lowercase().contains(needle)
+        }
+    }
+
+    DetailPage(title = stringResource(R.string.quick_functions_select_activity), onBack = onBack) {
+        item {
+            SearchBar(
+                inputField = {
+                    InputField(
+                        query = query,
+                        onQueryChange = { query = it },
+                        onSearch = {},
+                        expanded = searchExpanded,
+                        onExpandedChange = { searchExpanded = it },
+                        label = stringResource(R.string.quick_functions_search_activities),
+                    )
+                },
+                onExpandedChange = { searchExpanded = it },
+                expanded = searchExpanded,
+                outsideEndAction = {
+                    Text(
+                        text = stringResource(R.string.cancel),
+                        modifier = Modifier
+                            .padding(horizontal = 12.dp)
+                            .clickable(
+                                interactionSource = null,
+                                indication = null,
+                            ) { searchExpanded = false },
+                        color = MiuixTheme.colorScheme.primary,
+                    )
+                },
+            ) {}
+        }
+        if (packageLabel.isNotBlank()) {
+            item { SectionTitle(packageLabel) }
+        }
+        if (activities == null) {
+            item {
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(size = 28.dp)
+                }
+            }
+        } else if (filteredActivities.isEmpty()) {
+            item { Text(stringResource(R.string.quick_functions_no_activities)) }
+        } else {
+            items(filteredActivities.size, key = { filteredActivities[it].id }) { index ->
+                val activity = filteredActivities[index]
+                Card(modifier = Modifier.fillMaxWidth(), insideMargin = PaddingValues(0.dp)) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                pending = activity
+                                showSaveSheet = true
+                            }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                    ) {
+                        Text(
+                            text = activity.label,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = MiuixTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = activity.component.className,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            fontSize = MiuixTheme.textStyles.body2.fontSize,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    WindowBottomSheet(
+        show = showSaveSheet,
+        title = stringResource(R.string.quick_functions_save_title),
+        onDismissRequest = { showSaveSheet = false; pending = null },
+    ) {
+        Column(modifier = Modifier.padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(pending?.label.orEmpty())
+            Text(pending?.component?.flattenToString().orEmpty(), color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                TextButton(text = stringResource(R.string.cancel), onClick = { showSaveSheet = false; pending = null }, modifier = Modifier.weight(1f))
+                Button(
+                    onClick = {
+                        pending?.let { activity -> saved.value = addQuickActivity(prefs, activity.component) }
+                        pending = null
+                        showSaveSheet = false
+                        onAdded()
+                    },
+                    modifier = Modifier.weight(1f),
+                ) { Text(stringResource(R.string.save)) }
+            }
+        }
+    }
+}
+
+private fun loadLaunchableApps(context: Context): List<QuickPickerApp> {
+    val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
     val pm = context.packageManager
-    return runCatching {
-        pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), PackageManager.MATCH_ALL)
-    }.getOrDefault(emptyList()).mapNotNull { it.activityInfo?.let { info -> info.packageName to info.loadLabel(pm).toString() } }.distinctBy { it.first }.sortedBy { it.second.lowercase() }
+    return pm.queryIntentActivities(intent, 0)
+        .mapNotNull { resolve ->
+            val info = resolve.activityInfo ?: return@mapNotNull null
+            val label = runCatching { info.loadLabel(pm).toString() }.getOrNull()
+                ?.takeIf { it.isNotBlank() } ?: info.packageName
+            val icon = runCatching { info.loadIcon(pm).toBitmap(context) }.getOrNull()
+                ?: return@mapNotNull null
+            QuickPickerApp(info.packageName, label, icon)
+        }
+        .distinctBy { it.packageName }
+        .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
 }
 
 private fun packageActivities(context: Context, packageName: String): List<QuickActivity> = runCatching {
     context.packageManager.getPackageInfo(packageName, PackageManager.GET_ACTIVITIES).activities.orEmpty()
         .filter { it.exported }
-        .map { info -> QuickActivity(ComponentName(packageName, info.name), info.loadLabel(context.packageManager).toString(), packageName) }
+        .map { info -> QuickActivity(ComponentName(packageName, info.name), info.loadLabel(context.packageManager).toString()) }
         .sortedBy { it.label.lowercase() }
 }.getOrDefault(emptyList())
 
@@ -417,8 +619,16 @@ private fun resolveActivity(context: Context, component: ComponentName?): QuickA
     return runCatching {
         val info = context.packageManager.getActivityInfo(component, 0)
         if (!info.exported) return@runCatching null
-        QuickActivity(component, info.loadLabel(context.packageManager).toString(), component.packageName)
+        QuickActivity(component, info.loadLabel(context.packageManager).toString())
     }.getOrNull()
+}
+
+private fun Drawable.toBitmap(context: Context): Bitmap {
+    val size = (48 * context.resources.displayMetrics.density).toInt().coerceAtLeast(48)
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    setBounds(0, 0, size, size)
+    draw(Canvas(bitmap))
+    return bitmap
 }
 
 @Composable
@@ -465,24 +675,27 @@ private fun QuickFunctionsGrid(
 
 @Composable
 private fun QuickFunctionIcon(activity: QuickActivity, customUri: String? = null) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val bitmap = remember(activity.component.packageName, customUri) {
-        runCatching {
-            if (!customUri.isNullOrBlank()) {
-                context.contentResolver.openInputStream(Uri.parse(customUri))?.use { input ->
-                    android.graphics.BitmapFactory.decodeStream(input)
+    val context = LocalContext.current
+    val bitmapState = produceState<Bitmap?>(initialValue = null, activity.component.packageName, customUri) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                if (!customUri.isNullOrBlank()) {
+                    context.contentResolver.openInputStream(Uri.parse(customUri))?.use { input ->
+                        BitmapFactory.decodeStream(input)
+                    }
+                } else {
+                    val drawable = context.packageManager.getApplicationIcon(activity.component.packageName)
+                    val size = 96
+                    Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also { bitmap ->
+                        val canvas = Canvas(bitmap)
+                        drawable.setBounds(0, 0, size, size)
+                        drawable.draw(canvas)
+                    }
                 }
-            } else {
-            val drawable = context.packageManager.getApplicationIcon(activity.component.packageName)
-            val size = 96
-            Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also { bitmap ->
-                val canvas = Canvas(bitmap)
-                drawable.setBounds(0, 0, size, size)
-                drawable.draw(canvas)
-            }
-            }
-        }.getOrNull()
+            }.getOrNull()
+        }
     }
+    val bitmap = bitmapState.value
     if (bitmap != null) {
         Image(
             bitmap.asImageBitmap(),
@@ -496,25 +709,10 @@ private fun QuickFunctionIcon(activity: QuickActivity, customUri: String? = null
 }
 
 @Composable
-private fun AppPickerRow(packageName: String, label: String, onClick: () -> Unit) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val bitmap = remember(packageName) {
-        runCatching {
-            val drawable = context.packageManager.getApplicationIcon(packageName)
-            Bitmap.createBitmap(72, 72, Bitmap.Config.ARGB_8888).also { bitmap ->
-                drawable.setBounds(0, 0, 72, 72)
-                drawable.draw(Canvas(bitmap))
-            }
-        }.getOrNull()
-    }
-    Card(onClick = onClick, modifier = Modifier.fillMaxWidth(), insideMargin = PaddingValues(12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (bitmap != null) Image(bitmap.asImageBitmap(), label, Modifier.size(42.dp))
-            Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                Text(label, maxLines = 1)
-                Text(packageName, maxLines = 1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-            }
-            Text("›", fontSize = 24.sp, color = MiuixTheme.colorScheme.onSurfaceVariantActions)
-        }
-    }
+private fun AppIcon(icon: Bitmap, modifier: Modifier) {
+    Image(
+        bitmap = icon.asImageBitmap(),
+        contentDescription = null,
+        modifier = modifier,
+    )
 }

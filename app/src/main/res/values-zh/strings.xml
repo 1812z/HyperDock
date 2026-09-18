@@ -69,6 +69,8 @@
     <string name="quick_functions_activity">Activity 类名</string>
     <string name="quick_functions_choose_icon">选择图标</string>
     <string name="quick_functions_export">导出快速启动</string>
+    <string name="quick_functions_no_activities">未找到已导出的 Activity</string>
+    <string name="quick_functions_search_activities">搜索 Activity</string>
     <string name="delete">删除</string>
     <string name="next">下一步</string>
     <string name="shortcuts_added">已添加</string>

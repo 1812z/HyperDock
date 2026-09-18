@@ -46,6 +46,7 @@ import io.github.z1812.hyperdock.compose.component.LocalRootBottomBarPadding
 import io.github.z1812.hyperdock.compose.component.PredictiveNavigationBackHandler
 import io.github.z1812.hyperdock.compose.component.PredictiveNavigationBackdrop
 import io.github.z1812.hyperdock.compose.component.PredictiveNavigationLayer
+import io.github.z1812.hyperdock.compose.component.PredictiveNavigationLayerState
 import io.github.z1812.hyperdock.compose.component.UpdateDialogHost
 import io.github.z1812.hyperdock.compose.component.UpdateDialogState
 import io.github.z1812.hyperdock.compose.component.barBlurBackground
@@ -65,6 +66,8 @@ import io.github.z1812.hyperdock.compose.page.settings.MiscPage
 import io.github.z1812.hyperdock.compose.page.settings.SidebarBehaviorPage
 import io.github.z1812.hyperdock.compose.page.settings.AllAppsPage
 import io.github.z1812.hyperdock.compose.page.settings.CustomAppsPage
+import io.github.z1812.hyperdock.compose.page.settings.QuickActivitiesPickerPage
+import io.github.z1812.hyperdock.compose.page.settings.QuickAppsPickerPage
 import io.github.z1812.hyperdock.compose.page.settings.QuickFunctionsPage
 import io.github.z1812.hyperdock.compose.page.settings.ShortcutPage
 import io.github.z1812.hyperdock.compose.page.settings.ThemeSettingsPage
@@ -123,8 +126,16 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
     var visibleDetail by remember { mutableStateOf<SettingsDetail?>(null) }
     var detailShown by remember { mutableStateOf(false) }
     var customAppsShown by remember { mutableStateOf(false) }
+    var quickAppsShown by remember { mutableStateOf(false) }
+    var quickActivitiesShown by remember { mutableStateOf(false) }
+    var quickPickerApp by remember { mutableStateOf<Pair<String, String>?>(null) }
     val detailNavigationState = rememberPredictiveNavigationLayerState()
     val customAppsNavigationState = rememberPredictiveNavigationLayerState()
+    val quickAppsNavigationState = rememberPredictiveNavigationLayerState()
+    val quickActivitiesNavigationState = rememberPredictiveNavigationLayerState()
+    var detailBackgroundState by remember {
+        mutableStateOf<PredictiveNavigationLayerState>(customAppsNavigationState)
+    }
     val bottomBarProgress = remember { Animatable(0f) }
     var bottomBarHeightPx by remember { mutableIntStateOf(0) }
     var bottomBarComposed by remember { mutableStateOf(true) }
@@ -221,6 +232,8 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
 
     fun closeDetail() {
         customAppsShown = false
+        quickActivitiesShown = false
+        quickAppsShown = false
         detailShown = false
     }
 
@@ -242,7 +255,7 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
 
     PredictiveNavigationBackHandler(
         visible = detailShown,
-        enabled = detailShown && !customAppsShown,
+        enabled = detailShown && !customAppsShown && !quickAppsShown && !quickActivitiesShown,
         state = detailNavigationState,
         maxTranslationPercent = predictiveBackMaxTranslation.value,
         onDismiss = { detailShown = false },
@@ -260,6 +273,22 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
         state = customAppsNavigationState,
         maxTranslationPercent = predictiveBackMaxTranslation.value,
         onDismiss = { customAppsShown = false },
+    )
+
+    PredictiveNavigationBackHandler(
+        visible = quickAppsShown,
+        enabled = quickAppsShown && !quickActivitiesShown,
+        state = quickAppsNavigationState,
+        maxTranslationPercent = predictiveBackMaxTranslation.value,
+        onDismiss = { quickAppsShown = false },
+    )
+
+    PredictiveNavigationBackHandler(
+        visible = quickActivitiesShown,
+        enabled = quickActivitiesShown,
+        state = quickActivitiesNavigationState,
+        maxTranslationPercent = predictiveBackMaxTranslation.value,
+        onDismiss = { quickActivitiesShown = false },
     )
 
     BarBlurHost(
@@ -329,7 +358,7 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
                         PredictiveNavigationLayer(
                             visible = detailShown,
                             state = detailNavigationState,
-                            backgroundState = customAppsNavigationState,
+                            backgroundState = detailBackgroundState,
                             maxTranslationPercent = predictiveBackMaxTranslation.value,
                         ) {
                             when (visibleDetail) {
@@ -337,12 +366,22 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
                                 SettingsDetail.AllApps -> AllAppsPage(
                                     prefs = prefs,
                                     onBack = ::closeDetail,
-                                    onOpenApps = { customAppsShown = true },
+                                    onOpenApps = {
+                                        customAppsShown = true
+                                        detailBackgroundState = customAppsNavigationState
+                                    },
                                 )
                                 SettingsDetail.SidebarBehavior -> SidebarBehaviorPage(prefs, ::closeDetail)
                                 null -> SidebarBehaviorPage(prefs, ::closeDetail)
                                 SettingsDetail.Shortcuts -> ShortcutPage(prefs, ::closeDetail)
-                                SettingsDetail.QuickFunctions -> QuickFunctionsPage(prefs, ::closeDetail)
+                                SettingsDetail.QuickFunctions -> QuickFunctionsPage(
+                                    prefs = prefs,
+                                    onBack = ::closeDetail,
+                                    onOpenApps = {
+                                        quickAppsShown = true
+                                        detailBackgroundState = quickAppsNavigationState
+                                    },
+                                )
                                 SettingsDetail.Theme -> ThemeSettingsPage(prefs, ::closeDetail)
                                 SettingsDetail.Misc -> MiscPage(prefs, ::closeDetail)
                                 SettingsDetail.BackupRestore -> BackupRestorePage(::closeDetail)
@@ -369,6 +408,60 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
                                     prefs = prefs,
                                     onBack = { customAppsShown = false },
                                 )
+                            }
+                        }
+                    }
+
+                    PredictiveNavigationBackdrop(
+                        state = quickAppsNavigationState,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
+                    BarBlurHost(
+                        enabled = blurBars.value,
+                    ) {
+                        BarBackdropContent(modifier = Modifier.fillMaxSize()) {
+                            PredictiveNavigationLayer(
+                                visible = quickAppsShown,
+                                state = quickAppsNavigationState,
+                                backgroundState = quickActivitiesNavigationState,
+                                maxTranslationPercent = predictiveBackMaxTranslation.value,
+                            ) {
+                                QuickAppsPickerPage(
+                                    onBack = { quickAppsShown = false },
+                                    onPickApp = { packageName, label ->
+                                        quickPickerApp = packageName to label
+                                        quickActivitiesShown = true
+                                    },
+                                )
+                            }
+                        }
+
+                        PredictiveNavigationBackdrop(
+                            state = quickActivitiesNavigationState,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+
+                        BarBlurHost(
+                            enabled = blurBars.value,
+                        ) {
+                            BarBackdropContent(modifier = Modifier.fillMaxSize()) {
+                                PredictiveNavigationLayer(
+                                    visible = quickActivitiesShown,
+                                    state = quickActivitiesNavigationState,
+                                    maxTranslationPercent = predictiveBackMaxTranslation.value,
+                                ) {
+                                    QuickActivitiesPickerPage(
+                                        prefs = prefs,
+                                        packageName = quickPickerApp?.first.orEmpty(),
+                                        packageLabel = quickPickerApp?.second.orEmpty(),
+                                        onBack = { quickActivitiesShown = false },
+                                        onAdded = {
+                                            quickActivitiesShown = false
+                                            quickAppsShown = false
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
