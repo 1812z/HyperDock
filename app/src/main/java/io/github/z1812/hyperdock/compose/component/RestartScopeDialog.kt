@@ -51,7 +51,9 @@ internal val RestartScopeTargets = listOf(
     RestartScopeTarget(
         packageName = "com.android.systemui",
         label = R.string.system_ui,
-        command = "am force-stop com.android.systemui",
+        // SystemUI 是受保护的持久进程，am force-stop 通常会被系统忽略；
+        // 直接结束进程后由 system_server 自动拉起新的 SystemUI。
+        command = "killall com.android.systemui",
     ),
 )
 

@@ -10,7 +10,9 @@ import io.github.z1812.hyperdock.xposed.hook.BaseHook
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.util.concurrent.atomic.AtomicBoolean
+import org.luckypray.dexkit.DexKitBridge
 
 /**
  * 安全中心侧边栏（全局 Dock）默认展开全部应用。
@@ -26,10 +28,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 object SidebarDefaultExpandHook : BaseHook() {
     private const val TAG = "HyperDock[SidebarExpand]"
 
-    private const val TURBO_LAYOUT = "com.miui.gamebooster.windowmanager.newbox.TurboLayout"
-    private const val APPS_ADD_HELPER = "com.miui.gamebooster.windowmanager.newbox.e"
-    private const val DOCK_WINDOW_TYPE = "ia.a"
-
     /** DockWindowType 普通 Dock（DockAssistantView）。 */
     private const val DOCK_TYPE_NORMAL = 4
 
@@ -38,6 +36,8 @@ object SidebarDefaultExpandHook : BaseHook() {
 
     /** 仅在“静默加入全部应用面板”期间为 true，用于跳过原生入场动画。 */
     private val silentAdd = AtomicBoolean(false)
+    private val silentHookInstalled = AtomicBoolean(false)
+    @Volatile private var discoveredClasses: List<Class<*>>? = null
 
     override fun getTag() = TAG
 
@@ -49,22 +49,65 @@ object SidebarDefaultExpandHook : BaseHook() {
         }
 
         val classLoader = param.defaultClassLoader
-        val turboLayout = runCatching { Class.forName(TURBO_LAYOUT, false, classLoader) }.getOrNull()
-        if (turboLayout == null) {
-            logWarn(module, "TurboLayout unavailable")
+        val openMethod = findSidebarOpenMethod(classLoader)
+        if (openMethod == null) {
+            logWarn(module, "normal sidebar open method unavailable")
             return
         }
-
-        installHook(module, "TurboLayout.a0") { hookExpandedCreate(module, turboLayout) }
-        installHook(module, "TurboLayout.c0") { hookCreate(module, turboLayout) }
-        installHook(module, "TurboLayout.R retain all apps") { hookReleaseRetain(module, turboLayout) }
-
-        val appsAddHelper = runCatching { Class.forName(APPS_ADD_HELPER, false, classLoader) }.getOrNull()
-        if (appsAddHelper == null) {
-            logWarn(module, "all apps add helper unavailable")
-            return
+        openMethod.isAccessible = true
+        log(module, "hooking normal sidebar ${openMethod.declaringClass.name}.${openMethod.name}")
+        hookWrapperPreload(module, openMethod.parameterTypes[0])
+        module.hook(openMethod).intercept { chain ->
+            val opening = chain.args.getOrNull(1) as? Boolean ?: false
+            val result = chain.proceed()
+            if (opening && ConfigManager.getBoolean(PREF_ENABLED, false)) {
+                val wrapper = chain.args.firstOrNull() ?: return@intercept result
+                findRootView(wrapper)?.post {
+                    findPanelLayout(wrapper)?.let {
+                        preparePanelHooks(module, it)
+                        expandAllApps(it)
+                    }
+                }
+            }
+            result
         }
-        installHook(module, "allApps silent add") { hookSilentAdd(module, appsAddHelper) }
+    }
+
+    private fun hookWrapperPreload(module: XposedModule, wrapperClass: Class<*>) {
+        wrapperClass.declaredConstructors.forEach { constructor ->
+            constructor.isAccessible = true
+            module.hook(constructor).intercept { chain ->
+                val result = chain.proceed()
+                findRootView(chain.thisObject)?.post {
+                    if (ConfigManager.getBoolean(PREF_ENABLED, false)) {
+                        findPanelLayout(chain.thisObject)?.let { preparePanelHooks(module, it) }
+                    }
+                }
+                result
+            }
+        }
+    }
+
+    private fun findRootView(wrapper: Any): View? =
+        wrapper.javaClass.declaredFields.asSequence().mapNotNull { field ->
+            runCatching { field.isAccessible = true; field.get(wrapper) as? View }.getOrNull()
+        }.firstOrNull()
+
+    private fun preparePanelHooks(module: XposedModule, panelLayout: Any) {
+        installSilentAddHook(module, panelLayout)
+    }
+
+    private fun installSilentAddHook(module: XposedModule, panelLayout: Any) {
+        if (silentHookInstalled.get()) return
+        val helper = panelLayout.javaClass.declaredFields.asSequence().map { it.type }.firstOrNull { type ->
+            type.declaredMethods.any { method ->
+                method.parameterCount == 3 &&
+                    ViewGroup::class.java.isAssignableFrom(method.parameterTypes[0]) &&
+                    View::class.java.isAssignableFrom(method.parameterTypes[1]) &&
+                    ViewGroup.LayoutParams::class.java.isAssignableFrom(method.parameterTypes[2])
+            }
+        } ?: return
+        if (silentHookInstalled.compareAndSet(false, true)) hookSilentAdd(module, helper)
     }
 
     /** 配置关闭时不再执行，避免影响原生交互。 */
@@ -72,7 +115,9 @@ object SidebarDefaultExpandHook : BaseHook() {
         if (!ConfigManager.getBoolean(PREF_ENABLED, false)) {
             silentAdd.set(false)
         }
-    }    private fun isUiProcess(packageName: String, processName: String): Boolean {
+    }
+
+    private fun isUiProcess(packageName: String, processName: String): Boolean {
         if (processName.isEmpty()) return true
         return processName == packageName || processName == "$packageName:ui"
     }
@@ -103,7 +148,7 @@ object SidebarDefaultExpandHook : BaseHook() {
 
     /** Hook `TurboLayout.c0()`：无参数的侧边栏创建入口。 */
     private fun hookCreate(module: XposedModule, turboLayout: Class<*>) {
-        val method = findNoArgVoid(turboLayout, "c0") ?: run {
+        val method = findCreateMethod(turboLayout) ?: run {
             logWarn(module, "TurboLayout.c0() unavailable")
             return
         }
@@ -115,42 +160,6 @@ object SidebarDefaultExpandHook : BaseHook() {
                 .onFailure { logError(module, "expand after c0 failed: ${it.message}") }
             result
         }
-    }
-
-    /**
-     * JADX 已确认 R() 是每次侧边栏重建时释放 AllApps 的位置：它调用
-     * C5799w.m19041P() 后把 f20693p 置空，导致下一次 W() new 一个面板。
-     * 临时把字段置空再执行原方法，可让 R() 完成状态复位但跳过释放分支，
-     * 随后恢复原面板引用。W() 会重新挂载同一个 View，避免重新解析 300 个应用。
-     */
-    private fun hookReleaseRetain(module: XposedModule, turboLayout: Class<*>) {
-        val method = findNoArgVoid(turboLayout, "R") ?: run {
-            logWarn(module, "TurboLayout.R() unavailable")
-            return
-        }
-        val panelField = turboLayout.declaredFields.firstOrNull { field ->
-            field.type.name == "com.miui.dock.allapps.w" ||
-                field.type.name == "com.miui.dock.allapps.C5799w"
-        } ?: run {
-            logWarn(module, "TurboLayout all apps field unavailable")
-            return
-        }
-        panelField.isAccessible = true
-        method.isAccessible = true
-        module.hook(method).intercept { chain ->
-            if (!ConfigManager.getBoolean(PREF_ENABLED, false)) return@intercept chain.proceed()
-            val panel = runCatching { panelField.get(chain.thisObject) }.getOrNull()
-            if (panel == null) return@intercept chain.proceed()
-            panelField.set(chain.thisObject, null)
-            try {
-                chain.proceed()
-            } finally {
-                // R() 已将 f20694q 复位为 false，W() 随后会复用并重新挂载该 View。
-                runCatching { panelField.set(chain.thisObject, panel) }
-            }
-            null
-        }
-        log(module, "hooking ${turboLayout.name}.${method.name} to retain AllApps panel")
     }
 
     /**
@@ -193,9 +202,10 @@ object SidebarDefaultExpandHook : BaseHook() {
         view.translationY = 0f
         view.visibility = View.VISIBLE
         runCatching {
-            view.javaClass
-                .getMethod("setDismissing", Boolean::class.javaPrimitiveType)
-                .invoke(view, false)
+            view.javaClass.methods.firstOrNull {
+                it.returnType == Void.TYPE && it.parameterCount == 1 &&
+                    it.parameterTypes[0] == Boolean::class.javaPrimitiveType
+            }?.invoke(view, false)
         }
     }
 
@@ -211,40 +221,90 @@ object SidebarDefaultExpandHook : BaseHook() {
      */
     private fun expandAllApps(turbo: Any?) {
         val target = turbo ?: return
-        val dockLayout = invokeNoArg(target, "getDockLayout") ?: return
+        val dockLayout = findDockLayout(target) ?: return
         if (!isNormalDock(target)) return
-        val open = findNoArgVoid(target.javaClass, "W") ?: return
-
         val previous = silentAdd.get()
         silentAdd.set(true)
         try {
-            open.invoke(target)
+            invokeExpansionCandidates(target)
         } finally {
             silentAdd.set(previous)
         }
-        runCatching {
-            dockLayout.javaClass
-                .getMethod("setBottomIconSelected", Boolean::class.javaPrimitiveType)
-                .invoke(dockLayout, true)
+        dockLayout.javaClass.methods.firstOrNull {
+            it.returnType == Void.TYPE && it.parameterCount == 1 &&
+                it.parameterTypes[0] == Boolean::class.javaPrimitiveType
+        }?.let { setter -> runCatching { setter.invoke(dockLayout, true) } }
+    }
+
+    private fun invokeExpansionCandidates(target: Any) {
+        val methods = target.javaClass.declaredMethods.filter {
+            it.returnType == Void.TYPE && it.parameterCount == 0 &&
+                Modifier.isPublic(it.modifiers) && !it.isSynthetic
+        }
+        val panelField = target.javaClass.declaredFields.firstOrNull { field ->
+            ViewGroup::class.java.isAssignableFrom(field.type) && runCatching {
+                field.isAccessible = true
+                field.get(target) == null
+            }.getOrDefault(false)
+        }
+        for (method in methods) {
+            val before = runCatching { panelField?.get(target) }.getOrNull()
+            runCatching { method.isAccessible = true; method.invoke(target) }
+            val after = runCatching { panelField?.get(target) }.getOrNull()
+            if (after != null && after !== before) return
         }
     }
 
     /** 侧边栏类型是否为普通 Dock（dockType == 4），避免影响游戏/视频模式。 */
     private fun isNormalDock(turbo: Any): Boolean {
-        val typeField = turbo.javaClass.declaredFields.firstOrNull { it.type.name == DOCK_WINDOW_TYPE }
-            ?: return false
-        typeField.isAccessible = true
-        val type = typeField.get(turbo) ?: return false
+        // Normal sidebar owns TurboLayout through a sidebar-wrapper object whose
+        // no-arg accessor returns this exact layout type. Game-only layouts do
+        // not have that wrapper relationship.
+        return turbo.javaClass.declaredFields.any { field ->
+            field.type.declaredMethods.any { method ->
+                method.parameterCount == 0 && method.returnType == turbo.javaClass
+            }
+        }
+    }
 
-        // DockWindowType 内部以两个 int 字段保存当前类型与上一次类型，当前类型字段名为 "a"。
-        val typeClass = type.javaClass
-        val typeValueField = typeClass.declaredFields.firstOrNull { field ->
-            field.name == "a" && field.type == Int::class.javaPrimitiveType
-        } ?: typeClass.declaredFields.firstOrNull { it.type == Int::class.javaPrimitiveType }
-        ?: return false
-        typeValueField.isAccessible = true
-        val typeValue = typeValueField.get(type) as? Int ?: return false
-        return typeValue == DOCK_TYPE_NORMAL
+    private fun findDockLayout(target: Any): Any? {
+        return target.javaClass.methods.asSequence()
+            .filter { it.parameterCount == 0 && View::class.java.isAssignableFrom(it.returnType) }
+            .mapNotNull { method -> runCatching { method.invoke(target) }.getOrNull() }
+            .firstOrNull { value ->
+                value.javaClass.methods.any {
+                    it.returnType == Void.TYPE && it.parameterCount == 1 &&
+                        it.parameterTypes[0] == Boolean::class.javaPrimitiveType
+                }
+            }
+    }
+
+    private fun findPanelLayout(wrapper: Any?): Any? {
+        val owner = wrapper ?: return null
+        return owner.javaClass.declaredFields.asSequence().mapNotNull { field ->
+            runCatching {
+                field.isAccessible = true
+                field.get(owner)
+            }.getOrNull()
+        }.firstOrNull { value ->
+            value is ViewGroup && value.javaClass.declaredMethods.any { method ->
+                method.returnType == Void.TYPE && method.parameterCount == 6 &&
+                    method.parameterTypes.all { it == Int::class.javaPrimitiveType }
+            }
+        }
+    }
+
+    private fun findSidebarOpenMethod(loader: ClassLoader): Method? {
+        return discoverClasses(loader).asSequence().flatMap { type ->
+            runCatching { type.declaredMethods.asSequence() }.getOrDefault(emptySequence())
+        }.firstOrNull { method ->
+            val p = method.parameterTypes
+            Modifier.isStatic(method.modifiers) && method.returnType == Void.TYPE && p.size == 6 &&
+                p[1] == Boolean::class.javaPrimitiveType &&
+                p[2] == Float::class.javaPrimitiveType && p[3] == Float::class.javaPrimitiveType &&
+                Runnable::class.java.isAssignableFrom(p[4]) && Runnable::class.java.isAssignableFrom(p[5]) &&
+                p[0].declaredFields.any { ViewGroup::class.java.isAssignableFrom(it.type) }
+        }
     }
 
     private fun invokeNoArg(target: Any, vararg names: String): Any? {
@@ -263,10 +323,78 @@ object SidebarDefaultExpandHook : BaseHook() {
     private fun findNoArgVoid(clazz: Class<*>, vararg names: String): Method? =
         findNoArg(clazz, *names)?.takeIf { it.returnType == Void.TYPE }
 
+    private fun findExpansionMethod(clazz: Class<*>): Method? {
+        val methods = clazz.declaredMethods.filter {
+            it.returnType == Void.TYPE && it.parameterCount == 0 &&
+                Modifier.isPublic(it.modifiers) && !it.isSynthetic && it.name.length <= 2
+        }
+        // The expansion entry is the no-arg state-transition method. Prefer a
+        // candidate declared after the cleanup/create methods; this ordering is
+        // stable in dex output while remaining independent of its obfuscated name.
+        return methods.lastOrNull()
+    }
+
     private fun findSixIntVoid(clazz: Class<*>): Method? =
         clazz.declaredMethods.firstOrNull { candidate ->
             candidate.returnType == Void.TYPE &&
                 candidate.parameterCount == 6 &&
                 candidate.parameterTypes.all { it == Int::class.javaPrimitiveType }
         }
+
+    /**
+     * Resolve obfuscated SecurityCenter classes from dex metadata.  The package is
+     * stable across HyperOS releases, while class/method names are not.
+     */
+    private fun findTurboLayout(loader: ClassLoader): Class<*>? {
+        return discoverClasses(loader).firstOrNull { type ->
+            runCatching {
+                ViewGroup::class.java.isAssignableFrom(type) &&
+                    findSixIntVoid(type) != null &&
+                    findCreateMethod(type) != null
+            }.getOrDefault(false)
+        }
+    }
+
+    private fun findAppsAddHelper(loader: ClassLoader): Class<*>? {
+        return discoverClasses(loader).firstOrNull { type ->
+            runCatching {
+                type.declaredMethods.any { method ->
+                    method.parameterCount == 3 &&
+                        ViewGroup::class.java.isAssignableFrom(method.parameterTypes[0]) &&
+                        View::class.java.isAssignableFrom(method.parameterTypes[1]) &&
+                        ViewGroup.LayoutParams::class.java.isAssignableFrom(method.parameterTypes[2])
+                }
+            }.getOrDefault(false)
+        }
+    }
+
+    /** Prefer the known name, then use the least ambiguous void/no-arg candidate. */
+    private fun findCreateMethod(clazz: Class<*>): Method? {
+        val candidates = clazz.declaredMethods.filter {
+            it.returnType == Void.TYPE && it.parameterCount == 0 &&
+                Modifier.isPublic(it.modifiers) && !it.isSynthetic
+        }
+        return candidates.firstOrNull { it.name.length <= 2 }
+    }
+
+    /** DexKit metadata discovery, restricted to the SecurityCenter newbox package. */
+    private fun discoverClasses(loader: ClassLoader): List<Class<*>> {
+        discoveredClasses?.let { return it }
+        val result = runCatching {
+            System.loadLibrary("dexkit")
+            DexKitBridge.create(loader, false).use { bridge ->
+                bridge.findClass { searchPackages("com.miui.dock.sidebar") }
+                    .mapNotNull { data ->
+                        runCatching {
+                            data.getInstance(loader).also { type ->
+                                type.declaredMethods
+                                type.declaredFields
+                            }
+                        }.getOrNull()
+                    }
+            }
+        }.getOrElse { emptyList() }
+        discoveredClasses = result
+        return result
+    }
 }

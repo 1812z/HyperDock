@@ -65,6 +65,7 @@ import io.github.z1812.hyperdock.compose.page.settings.MiscPage
 import io.github.z1812.hyperdock.compose.page.settings.SidebarBehaviorPage
 import io.github.z1812.hyperdock.compose.page.settings.AllAppsPage
 import io.github.z1812.hyperdock.compose.page.settings.CustomAppsPage
+import io.github.z1812.hyperdock.compose.page.settings.QuickFunctionsPage
 import io.github.z1812.hyperdock.compose.page.settings.ShortcutPage
 import io.github.z1812.hyperdock.compose.page.settings.ThemeSettingsPage
 import io.github.z1812.hyperdock.compose.service.UpdateService
@@ -333,14 +334,15 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
                         ) {
                             when (visibleDetail) {
                                 SettingsDetail.Sidebar,
-                                SettingsDetail.SidebarBehavior,
                                 SettingsDetail.AllApps -> AllAppsPage(
                                     prefs = prefs,
                                     onBack = ::closeDetail,
                                     onOpenApps = { customAppsShown = true },
                                 )
+                                SettingsDetail.SidebarBehavior -> SidebarBehaviorPage(prefs, ::closeDetail)
                                 null -> SidebarBehaviorPage(prefs, ::closeDetail)
                                 SettingsDetail.Shortcuts -> ShortcutPage(prefs, ::closeDetail)
+                                SettingsDetail.QuickFunctions -> QuickFunctionsPage(prefs, ::closeDetail)
                                 SettingsDetail.Theme -> ThemeSettingsPage(prefs, ::closeDetail)
                                 SettingsDetail.Misc -> MiscPage(prefs, ::closeDetail)
                                 SettingsDetail.BackupRestore -> BackupRestorePage(::closeDetail)

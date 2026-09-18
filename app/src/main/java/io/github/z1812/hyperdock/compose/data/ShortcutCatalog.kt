@@ -100,4 +100,5 @@ object ShortcutCatalog {
             )
         }
     }
+
 }

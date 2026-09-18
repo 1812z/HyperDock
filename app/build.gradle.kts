@@ -111,4 +111,5 @@ dependencies {
     implementation(libs.miuix.blur)
     compileOnly(libs.libxposed.api)
     implementation(libs.libxposed.service)
+    implementation("org.luckypray:dexkit:2.2.0")
 }

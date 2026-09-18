@@ -88,6 +88,7 @@ internal fun DetailPage(
     actionIcon: ImageVector? = null,
     actionDescription: String = "",
     onAction: (() -> Unit)? = null,
+    floatingActionButton: (@Composable () -> Unit)? = null,
     snackbarHost: @Composable () -> Unit = {},
     content: LazyListScope.() -> Unit,
 ) {
@@ -118,6 +119,7 @@ internal fun DetailPage(
                 }
             },
             snackbarHost = snackbarHost,
+            floatingActionButton = { floatingActionButton?.invoke() },
         ) { padding ->
             BarBackdropContent(modifier = Modifier.fillMaxSize()) {
                 PageList(

@@ -40,6 +40,21 @@
 
     <string name="shortcuts">快捷方式</string>
     <string name="shortcuts_summary">在全部应用面板与侧边栏展示自定义快捷方式</string>
+    <string name="quick_functions">快捷功能</string>
+    <string name="quick_functions_summary">从侧边栏启动选定的应用 Activity</string>
+    <string name="quick_functions_added">已添加</string>
+    <string name="quick_functions_empty">暂未添加快捷功能</string>
+    <string name="quick_functions_add">添加快捷功能</string>
+    <string name="quick_functions_import">导入</string>
+    <string name="quick_functions_add_manual">添加</string>
+    <string name="quick_functions_select_app">选取</string>
+    <string name="quick_functions_select_activity">选择 Activity</string>
+    <string name="quick_functions_save_title">是否保存此快捷功能？</string>
+    <string name="quick_functions_name">名称</string>
+    <string name="quick_functions_package">包名</string>
+    <string name="quick_functions_activity">Activity 类名</string>
+    <string name="delete">删除</string>
+    <string name="next">下一步</string>
     <string name="shortcuts_added">已添加</string>
     <string name="shortcuts_not_added">未添加</string>
     <string name="shortcut_owner_system">系统应用</string>

@@ -31,6 +31,10 @@ object PrefKeys {
     const val SHORTCUTS_ENABLED = "shortcuts_enabled"
     const val SHORTCUTS_ADDED = "shortcuts_added"
 
+    // 自定义快捷功能（显式 Activity）
+    const val QUICK_FUNCTIONS_ENABLED = "quick_functions_enabled"
+    const val QUICK_FUNCTIONS_ADDED = "quick_functions_added"
+
     const val CONFIG_APP_VERSION = "config_app_version"
     const val CONFIG_SCHEMA_VERSION = "config_schema_version"
 
@@ -55,5 +59,7 @@ object PrefKeys {
         ALL_APPS_CUSTOM_PACKAGES,
         SHORTCUTS_ENABLED,
         SHORTCUTS_ADDED,
+        QUICK_FUNCTIONS_ENABLED,
+        QUICK_FUNCTIONS_ADDED,
     )
 }

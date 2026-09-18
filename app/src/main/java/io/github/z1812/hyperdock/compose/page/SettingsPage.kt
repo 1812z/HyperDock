@@ -16,7 +16,6 @@ import io.github.z1812.hyperdock.compose.component.SettingsActionWithArrow
 import io.github.z1812.hyperdock.compose.data.PrefsRepository
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Backup
 import top.yukonga.miuix.kmp.icon.extended.GridView
 import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.icon.extended.Sidebar
@@ -29,6 +28,7 @@ internal enum class SettingsDetail {
     SidebarBehavior,
     AllApps,
     Shortcuts,
+    QuickFunctions,
     Theme,
     Misc,
     BackupRestore,
@@ -56,6 +56,9 @@ internal fun SettingsPage(
                 }
                 SettingsActionWithArrow(stringResource(R.string.shortcuts), MiuixIcons.Tune) {
                     onOpenDetail(SettingsDetail.Shortcuts)
+                }
+                SettingsActionWithArrow(stringResource(R.string.quick_functions), MiuixIcons.Tune) {
+                    onOpenDetail(SettingsDetail.QuickFunctions)
                 }
             }
         }
@@ -91,14 +94,6 @@ internal fun SettingsPage(
                         prefs.putString(KEY_LOCALE, selectedLocale)
                     }
                     AppLocaleController.apply(context, selectedLocale)
-                }
-            }
-        }
-        item {
-            SectionTitle(stringResource(R.string.about_module))
-            Card(modifier = Modifier.fillMaxWidth()) {
-                SettingsActionWithArrow(stringResource(R.string.backup_restore), MiuixIcons.Backup) {
-                    onOpenDetail(SettingsDetail.BackupRestore)
                 }
             }
         }
