@@ -1,6 +1,12 @@
 package io.github.z1812.hyperdock.compose.page.settings
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Arrangement
@@ -99,8 +105,20 @@ internal fun SidebarBehaviorPage(prefs: PrefsRepository, onBack: () -> Unit) {
                 PreferenceSwitch(stringResource(R.string.sidebar_panel_cache), stringResource(R.string.sidebar_panel_cache_summary), null, panelCache.value) { panelCache.value = it; prefs.putBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, it) }
                 AnimatedVisibility(
                     visible = expandAllApps.value && panelCache.value,
-                    enter = slideInVertically { height -> -height },
-                    exit = slideOutVertically { height -> -height },
+                    enter = expandVertically(
+                        animationSpec = tween(280, easing = FastOutSlowInEasing),
+                        expandFrom = Alignment.Top,
+                    ) + slideInVertically(
+                        animationSpec = tween(280, easing = FastOutSlowInEasing),
+                        initialOffsetY = { -it / 2 },
+                    ) + fadeIn(tween(180)),
+                    exit = shrinkVertically(
+                        animationSpec = tween(220, easing = FastOutSlowInEasing),
+                        shrinkTowards = Alignment.Top,
+                    ) + slideOutVertically(
+                        animationSpec = tween(220, easing = FastOutSlowInEasing),
+                        targetOffsetY = { -it / 2 },
+                    ) + fadeOut(tween(140)),
                 ) {
                     PreferenceSwitch(
                         title = stringResource(R.string.sidebar_staggered_expand),
