@@ -206,8 +206,11 @@ private fun PopupActionIcon(action: ItemPopupAction) {
 }
 
 /**
- * 通用条目编辑对话框：标题即名称，居中图标预览 + 名称输入 + 彩色图标开关 +
+ * 通用条目编辑对话框：标题即名称，居中图标预览 + 彩色图标开关 + 名称输入 +
  * 选择/恢复默认图标 + 取消/保存。
+ *
+ * 顺序上「彩色图标」紧贴图标预览、排在名称输入之上：它直接决定上面那枚预览是否着色，
+ * 放在预览与名称之间，改完立刻能在相邻的预览上看到效果，不用先跨过输入框。
  */
 @Composable
 internal fun ItemEditDialog(
@@ -269,6 +272,12 @@ internal fun ItemEditDialog(
                     }
                 }
             }
+            PreferenceSwitch(
+                title = stringResource(R.string.color_icon),
+                summary = null,
+                icon = null,
+                checked = colorIcon,
+            ) { colorIcon = it }
             TextField(
                 value = name,
                 onValueChange = { name = it },
@@ -276,12 +285,6 @@ internal fun ItemEditDialog(
                 label = nameLabel,
                 singleLine = true,
             )
-            PreferenceSwitch(
-                title = stringResource(R.string.color_icon),
-                summary = null,
-                icon = null,
-                checked = colorIcon,
-            ) { colorIcon = it }
             if (iconUri == null) {
                 Button(
                     onClick = { iconPicker.launch(arrayOf("image/*")) },
