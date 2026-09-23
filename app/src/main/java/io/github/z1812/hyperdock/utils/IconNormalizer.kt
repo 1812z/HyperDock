@@ -2,11 +2,13 @@ package io.github.z1812.hyperdock.utils
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BlendMode
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
-import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import kotlin.math.roundToInt
@@ -21,8 +23,14 @@ import kotlin.math.roundToInt
  * | 图标来源 | 画布 | 画面实际占比 |
  * |---|---|---|
  * | QS 矢量图（`ic_qs_*`） | 24dp | 有的铺满 viewport，有的只占中间一小块 |
- * | 第三方自适应图标 | 108dp | 内容固定只占中间 72dp（≈ 66%） |
+ * | 第三方自适应图标 | 108dp | **画出来时已按遮罩裁形**，形状大致铺满整幅 |
  * | 第三方静态图标 | 各异 | 大量是"不透明底板 + 图形"，白底把图形衬得更小 |
+ *
+ * ⚠️ 不要按"自适应图标内容只占中央 72dp"去裁它 —— 那说的是**未绘制**的前景层
+ * 安全区，不是画面边界。`AdaptiveIconDrawable.draw()` 会把子层 clip 到遮罩路径
+ * （圆角方 / 圆形，铺满整个 bounds），此时再取中央 72/108 再放大，正好把四条边的
+ * 圆角弧全部切掉、留下一块完全不透明的正方形 —— 表现为**图标变方、无圆角、
+ * 且被放大 1.5 倍（全尺寸）**。这类边界一律交给 alpha 统计。
  *
  * 而渲染端只会做一件事：把 Drawable 塞进一个固定大小的方框。于是：
  *
@@ -69,12 +77,17 @@ object IconNormalizer {
      * @param contentInset    内容四周留白比例，0 = 铺满
      * @param trimWhitePlate  是否剔除"白底 + 图形"里的白底。
      *        侧边栏注入磁贴要（旧行为如此）；应用图标网格不要 —— 那里的白底是设计的一部分。
+     * @param cornerPercent   输出画布的圆角半径占边长比例，0 = 不切圆角。
+     *        应用图标传正值：MIUI 会给应用图标套圆角容器，而静态（非自适应）图标
+     *        本身是满幅方图，不切就是"方形无圆角"。用了遮罩的自适应图标不受影响 ——
+     *        见 [applyCornerRadius] 的说明。
      */
     fun normalize(
         source: Drawable,
         size: Int,
         contentInset: Float = 0f,
         trimWhitePlate: Boolean = false,
+        cornerPercent: Float = 0f,
     ): Bitmap {
         val side = size.coerceAtLeast(1)
         val work = maxOf(side * 2, WORK_MIN)
@@ -88,18 +101,51 @@ object IconNormalizer {
         source.setBounds(bounds.left, bounds.top, bounds.right, bounds.bottom)
         source.draw(Canvas(canvas))
 
-        val sourceRect = contentRect(source, canvas, work, trimWhitePlate)
+        val sourceRect = contentRect(canvas, work, trimWhitePlate)
 
         val output = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
         val inset = side * contentInset.coerceIn(0f, 0.4f) / 2f
-        Canvas(output).drawBitmap(
+        val destination = RectF(inset, inset, side - inset, side - inset)
+        val outputCanvas = Canvas(output)
+        outputCanvas.drawBitmap(
             canvas,
             sourceRect,
-            RectF(inset, inset, side - inset, side - inset),
+            destination,
             Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG),
         )
+        applyCornerRadius(outputCanvas, destination, side * cornerPercent)
         canvas.recycle()
         return output
+    }
+
+    /**
+     * 把 [bounds] 的四个角擦成透明。
+     *
+     * 用 `DST_OUT` 擦除而不是 `clipPath`：`clipPath` 是硬裁切，圆角边缘会有锯齿；
+     * 这里让 Path 自己带抗锯齿，边缘干净。
+     *
+     * **对已按遮罩画好的自适应图标是空操作**：半径 0.2 的圆角矩形的边界落在
+     * n=4 超椭圆（MIUI 图标形状）之外（0.5 − 0.293r ≥ 0.420 需 r ≤ 0.27），
+     * 而圆、n=3 这类更圆的遮罩更是天然内切于圆角矩形 —— 擦的都是本来就透明的
+     * 角落。只有满幅方图（静态图标）才会真正被切出圆角。
+     */
+    private fun applyCornerRadius(canvas: Canvas, bounds: RectF, radius: Float) {
+        val corner = radius.coerceAtMost(minOf(bounds.width(), bounds.height()) / 2f)
+        if (corner <= 0f) return
+        val outside = Path().apply {
+            fillType = Path.FillType.WINDING
+            addRect(bounds, Path.Direction.CW)
+            // 反向子路径形成"洞"：外面是正的，里面是负的，抵消后只剩四角。
+            addRoundRect(bounds, corner, corner, Path.Direction.CCW)
+        }
+        canvas.drawPath(
+            outside,
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.FILL
+                color = Color.BLACK
+                blendMode = BlendMode.DST_OUT
+            },
+        )
     }
 
     /** 便捷重载：直接给 `ImageView.setImageDrawable` 用。 */
@@ -109,21 +155,16 @@ object IconNormalizer {
         size: Int,
         contentInset: Float = 0f,
         trimWhitePlate: Boolean = false,
+        cornerPercent: Float = 0f,
     ): Drawable = BitmapDrawable(
         context.resources,
-        normalize(source, size, contentInset, trimWhitePlate),
+        normalize(source, size, contentInset, trimWhitePlate, cornerPercent),
     )
 
     /** 量出"应该放大到占满"的那块内容区域。 */
-    private fun contentRect(source: Drawable, canvas: Bitmap, size: Int, trimWhitePlate: Boolean): Rect {
-        // 自适应图标：背景层铺满整幅 108dp，内容只占中央 72dp —— 像素统计量不出这条边界
-        // （背景层到处都不透明），只能按规范直接取中央 72/108。取完再放大到占满，
-        // 才是"和别的满幅图标一样大"。
-        if (source is AdaptiveIconDrawable) {
-            val margin = size / 6
-            return Rect(margin, margin, size - margin, size - margin)
-        }
-
+    private fun contentRect(canvas: Bitmap, size: Int, trimWhitePlate: Boolean): Rect {
+        // 这里**没有**自适应图标的特例：draw() 已按遮罩把形状裁好，alpha 边界就是
+        // 形状边界（圆角/圆形都能量准），照它放大即可保持原形状。详见类注释的 ⚠️。
         val pixels = IntArray(size * size)
         canvas.getPixels(pixels, 0, size, 0, 0, size, size)
 

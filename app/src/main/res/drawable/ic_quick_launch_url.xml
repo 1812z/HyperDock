@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  URL 快速启动条目的兜底图标（用户没自定义图标时使用）。
+
+  画法：外圈环 + 竖椭圆环（经线） + 赤道横线，纯几何构造，不依赖外部图标库。
+  两侧都用它：模块 App 走 painterResource，侧边栏在安全中心进程里经
+  createPackageContext 按资源名取（见 SidebarShortcutController.moduleDrawable）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 外圈：半径 10 的圆环（evenOdd 挖掉半径 8 的内圆） -->
+    <path
+        android:fillColor="#FF000000"
+        android:fillType="evenOdd"
+        android:pathData="M12,2a10,10 0 1,0 0,20a10,10 0 1,0 0,-20zM12,4a8,8 0 1,0 0,16a8,8 0 1,0 0,-16z" />
+    <!-- 经线：竖椭圆环，长轴略短于内圆，避免顶出外圈 -->
+    <path
+        android:fillColor="#FF000000"
+        android:fillType="evenOdd"
+        android:pathData="M12,4.4a4.4,7.6 0 1,0 0,15.2a4.4,7.6 0 1,0 0,-15.2zM12,6.4a2.4,5.6 0 1,0 0,11.2a2.4,5.6 0 1,0 0,-11.2z" />
+    <!-- 赤道：横线两端收在内圆之内 -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M4.1,11h15.8v2h-15.8z" />
+</vector>

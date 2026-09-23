@@ -74,6 +74,11 @@
     <string name="quick_functions_name">名称</string>
     <string name="quick_functions_package">包名</string>
     <string name="quick_functions_activity">Activity 类名</string>
+    <string name="quick_functions_launch_mode">启动方式</string>
+    <string name="quick_functions_launch_mode_activity">活动</string>
+    <string name="quick_functions_launch_mode_url">URL</string>
+    <string name="quick_functions_url">URL 地址</string>
+    <string name="quick_functions_url_invalid">请输入有效的 URL</string>
     <string name="quick_functions_choose_icon">选择图标</string>
     <string name="quick_functions_export">导出快速启动</string>
     <string name="quick_functions_no_activities">未找到已导出的 Activity</string>

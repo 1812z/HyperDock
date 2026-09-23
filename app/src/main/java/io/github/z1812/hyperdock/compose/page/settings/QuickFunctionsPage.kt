@@ -40,12 +40,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect as WindowRect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -57,6 +59,7 @@ import io.github.z1812.hyperdock.compose.component.ItemActionPopup
 import io.github.z1812.hyperdock.compose.component.ItemFlight
 import io.github.z1812.hyperdock.compose.component.ItemFlyOverlay
 import io.github.z1812.hyperdock.compose.component.ItemPopupAction
+import io.github.z1812.hyperdock.compose.component.PreferenceDropdown
 import io.github.z1812.hyperdock.compose.component.PreferenceSwitch
 import io.github.z1812.hyperdock.compose.component.SectionTitle
 import io.github.z1812.hyperdock.compose.component.SettingsActionWithArrow
@@ -64,6 +67,7 @@ import io.github.z1812.hyperdock.compose.data.PrefsRepository
 import io.github.z1812.hyperdock.compose.data.rememberBooleanPreference
 import io.github.z1812.hyperdock.compose.data.rememberStringPreference
 import io.github.z1812.hyperdock.compose.data.rememberStringSetPreference
+import io.github.z1812.hyperdock.quicklaunch.QuickLaunchFormat
 import io.github.z1812.hyperdock.utils.IconNormalizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -89,11 +93,52 @@ import top.yukonga.miuix.kmp.window.WindowBottomSheet
 import top.yukonga.miuix.kmp.window.WindowDialog
 import java.util.UUID
 
+/** 活动选择器里的候选：只会产出活动条目，与 URL 无关，故 component 非空。 */
 private data class QuickActivity(
     val component: ComponentName,
     val label: String,
     val id: String = component.flattenToString(),
 )
+
+/**
+ * 候选 → 待保存条目。
+ *
+ * id 留空即可：真正的 entryId 由 [addQuickLaunchEntry] 在确认保存时生成，
+ * [QuickLaunchEntry.id] 只用于「已添加列表」的排序 / 标签 / 图标寻址。
+ */
+private fun QuickActivity.toLaunchEntry(): QuickLaunchEntry =
+    QuickLaunchEntry.ofActivity(id = "", label = label, component = component)
+
+/** 手动添加的「启动方式」，与 [QuickLaunchFormat] 的 payload 形态一一对应。 */
+private const val LAUNCH_KIND_ACTIVITY = 0
+private const val LAUNCH_KIND_URL = 1
+
+/**
+ * 「已添加」列表的条目。
+ *
+ * 活动与 URL 共用同一套 entryId / 排序 / 标签 / 自定义图标链路，差异只在
+ * [payload]：活动是组件名，URL 是 `url:...`（见 [QuickLaunchFormat]）。
+ */
+private data class QuickLaunchEntry(
+    val id: String,
+    val label: String,
+    val component: ComponentName? = null,
+    val url: String? = null,
+) {
+    val isUrl: Boolean get() = url != null
+
+    /** 写回 `QUICK_FUNCTIONS_ADDED` 的 payload。 */
+    val payload: String
+        get() = url?.let(QuickLaunchFormat::urlPayload) ?: component?.flattenToString().orEmpty()
+
+    companion object {
+        fun ofActivity(id: String, label: String, component: ComponentName) =
+            QuickLaunchEntry(id = id, label = label, component = component)
+
+        fun ofUrl(id: String, url: String) =
+            QuickLaunchEntry(id = id, label = QuickLaunchFormat.defaultLabel(url), url = url)
+    }
+}
 
 private data class QuickPickerApp(
     val packageName: String,
@@ -101,10 +146,15 @@ private data class QuickPickerApp(
     val icon: Bitmap,
 )
 
-/** 新增条目同时登记到 QUICK_FUNCTIONS_ORDER 尾部，保证未手动排序前列表顺序稳定。 */
-private fun addQuickActivity(prefs: PrefsRepository, component: ComponentName): Set<String> {
+/**
+ * 新增条目同时登记到 QUICK_FUNCTIONS_ORDER 尾部，保证未手动排序前列表顺序稳定。
+ *
+ * @param payload 活动传组件名，URL 传 [QuickLaunchFormat.urlPayload] 的结果。
+ */
+private fun addQuickLaunchEntry(prefs: PrefsRepository, payload: String): Set<String> {
     val entryId = "q" + UUID.randomUUID().toString().replace("-", "").take(8)
-    val next = prefs.getStringSet(PrefKeys.QUICK_FUNCTIONS_ADDED) + "$entryId|${component.flattenToString()}"
+    val next = prefs.getStringSet(PrefKeys.QUICK_FUNCTIONS_ADDED) +
+        QuickLaunchFormat.encodeStorage(entryId, payload)
     prefs.putStringSet(PrefKeys.QUICK_FUNCTIONS_ADDED, next)
     val order = prefs.getString(PrefKeys.QUICK_FUNCTIONS_ORDER, "")
         .split(',')
@@ -126,29 +176,39 @@ internal fun QuickFunctionsPage(
     val labels = rememberStringSetPreference(prefs, PrefKeys.QUICK_FUNCTIONS_LABELS)
     val order = rememberStringPreference(prefs, PrefKeys.QUICK_FUNCTIONS_ORDER, "")
     var expanded by remember { mutableStateOf(false) }
-    var pending by remember { mutableStateOf<QuickActivity?>(null) }
+    var pending by remember { mutableStateOf<QuickLaunchEntry?>(null) }
     var showSaveSheet by remember { mutableStateOf(false) }
     var showManualSheet by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf<QuickActivity?>(null) }
+    var editing by remember { mutableStateOf<QuickLaunchEntry?>(null) }
     var editName by remember { mutableStateOf("") }
     var editIconUri by remember { mutableStateOf<String?>(null) }
+    var manualKind by remember { mutableStateOf(LAUNCH_KIND_ACTIVITY) }
+    var manualUrl by remember { mutableStateOf("") }
     var manualPackage by remember { mutableStateOf("") }
     var manualClass by remember { mutableStateOf("") }
     var manualName by remember { mutableStateOf("") }
-    var popupFor by remember { mutableStateOf<QuickActivity?>(null) }
+    var popupFor by remember { mutableStateOf<QuickLaunchEntry?>(null) }
     var flights by remember { mutableStateOf<List<ItemFlight>?>(null) }
     val cardBounds = remember { mutableStateMapOf<String, WindowRect>() }
 
-    val resolvedItems = produceState<List<QuickActivity>?>(initialValue = null, saved.value, labels.value) {
+    val resolvedItems = produceState<List<QuickLaunchEntry>?>(initialValue = null, saved.value, labels.value) {
         value = withContext(Dispatchers.IO) {
-            saved.value.filter { '|' in it }.mapNotNull { entry ->
-                val entryId = entry.substringBefore('|')
-                resolveActivity(context, ComponentName.unflattenFromString(entry.substringAfter('|')))
-                    ?.copy(id = entryId)
-                    ?.let { activity ->
-                        val custom = labels.value.firstOrNull { it.startsWith("$entryId=") }?.substringAfter('=')
-                        if (custom.isNullOrBlank()) activity else activity.copy(label = custom)
+            saved.value.mapNotNull { entry ->
+                val entryId = QuickLaunchFormat.storageEntryId(entry) ?: return@mapNotNull null
+                val payload = QuickLaunchFormat.storagePayload(entry) ?: return@mapNotNull null
+                if (payload.isBlank()) return@mapNotNull null
+                val custom = labels.value.firstOrNull { it.startsWith("$entryId=") }?.substringAfter('=')
+                // URL 条目没有组件可查，不能像活动那样"查不到就丢"。
+                if (QuickLaunchFormat.isUrl(payload)) {
+                    val url = QuickLaunchFormat.urlOf(payload)
+                    if (url.isBlank()) return@mapNotNull null
+                    QuickLaunchEntry.ofUrl(entryId, url)
+                        .let { if (custom.isNullOrBlank()) it else it.copy(label = custom) }
+                } else {
+                    resolveActivity(context, ComponentName.unflattenFromString(payload))?.let { activity ->
+                        QuickLaunchEntry.ofActivity(entryId, custom ?: activity.label, activity.component)
                     }
+                }
             }
         }
     }
@@ -176,9 +236,9 @@ internal fun QuickFunctionsPage(
         prefs.putString(PrefKeys.QUICK_FUNCTIONS_ORDER, joined)
     }
 
-    fun deleteAdded(activity: QuickActivity) {
-        val from = cardBounds[activity.id]
-        val id = activity.id
+    fun deleteAdded(entry: QuickLaunchEntry) {
+        val from = cardBounds[entry.id]
+        val id = entry.id
         val nextSaved = saved.value.filterNot { it == id || it.startsWith("$id|") }.toSet()
         val nextIcons = iconUris.value.filterNot { it.startsWith("$id=") }.toSet()
         val nextLabels = labels.value.filterNot { it.startsWith("$id=") }.toSet()
@@ -196,34 +256,34 @@ internal fun QuickFunctionsPage(
                     id = id,
                     from = from,
                     adding = false,
-                    content = { QuickFunctionIcon(activity, customIconUri(id)) },
+                    content = { QuickFunctionIcon(entry, customIconUri(id)) },
                 ),
             )
         }
     }
 
     // 与相邻位置交换（网格跨行时即“第一行最后一个 ↔ 第二行第一个”）。
-    fun moveAdded(activity: QuickActivity, delta: Int) {
-        val index = orderedItems.indexOfFirst { it.id == activity.id }
+    fun moveAdded(entry: QuickLaunchEntry, delta: Int) {
+        val index = orderedItems.indexOfFirst { it.id == entry.id }
         val swapIndex = index + delta
         if (index < 0 || swapIndex < 0 || swapIndex >= orderedItems.size) return
         val other = orderedItems[swapIndex]
-        val fromA = cardBounds[activity.id]
+        val fromA = cardBounds[entry.id]
         val fromB = cardBounds[other.id]
         saveOrder(
             orderedItems.map { it.id }.toMutableList().apply {
                 set(index, other.id)
-                set(swapIndex, activity.id)
+                set(swapIndex, entry.id)
             },
         )
         popupFor = null
         if (fromA != null && fromB != null) {
             flights = listOf(
                 ItemFlight(
-                    id = activity.id,
+                    id = entry.id,
                     from = fromA,
                     adding = false,
-                    content = { QuickFunctionIcon(activity, customIconUri(activity.id)) },
+                    content = { QuickFunctionIcon(entry, customIconUri(entry.id)) },
                 ),
                 ItemFlight(
                     id = other.id,
@@ -237,29 +297,42 @@ internal fun QuickFunctionsPage(
 
     BackHandler(enabled = popupFor != null || editing != null) { popupFor = null; editing = null }
 
-    fun requestSave(activity: QuickActivity) {
-        pending = activity
+    fun requestSave(entry: QuickLaunchEntry) {
+        pending = entry
         showSaveSheet = true
     }
 
+    // 导入支持两种文件：本模块导出的 `url=` / `component=` 键值行，以及只有一行裸组件名的旧文件。
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        val component = runCatching {
-            context.contentResolver.openInputStream(uri)?.bufferedReader()?.useLines { lines ->
-                lines.map(String::trim).firstOrNull { it.contains('/') }
-            }
-        }.getOrNull()?.let(ComponentName::unflattenFromString)
+        val lines = runCatching {
+            context.contentResolver.openInputStream(uri)?.bufferedReader()?.useLines { it.map(String::trim).toList() }
+        }.getOrNull().orEmpty()
+        val url = lines.firstOrNull { it.startsWith("url=") }?.substringAfter('=')
+        if (!url.isNullOrBlank()) {
+            QuickLaunchFormat.normalizeUrl(url)?.let { requestSave(QuickLaunchEntry.ofUrl("", it)) }
+            return@rememberLauncherForActivityResult
+        }
+        // 先滤掉 name= / icon= 这些非组件行：它们含 '/'，会骗过"含斜杠即组件"的判据；
+        // 而且 `component=com.foo/.Bar` 若整行 unflatten，包名会变成 "component=com.foo" 查不到。
+        val component = lines
+            .filterNot { it.startsWith("name=") || it.startsWith("icon=") }
+            .firstOrNull { it.isNotBlank() && '/' in it }
+            ?.removePrefix("component=")
+            ?.let(ComponentName::unflattenFromString)
         if (component != null) {
-            val activity = resolveActivity(context, component)
-            if (activity != null) requestSave(activity)
+            resolveActivity(context, component)?.let { requestSave(it.toLaunchEntry()) }
         }
     }
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
-        val activity = editing
-        if (uri != null && activity != null) runCatching {
+        val entry = editing
+        if (uri != null && entry != null) runCatching {
             context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer ->
                 writer.appendLine("name=${editName.trim()}")
-                writer.appendLine("component=${activity.component.flattenToString()}")
+                // URL 与活动各写各的键，导入侧按同一套键回读。
+                writer.appendLine(
+                    if (entry.isUrl) "url=${entry.url}" else "component=${entry.component?.flattenToString().orEmpty()}",
+                )
                 editIconUri?.let { writer.appendLine("icon=$it") }
             }
         }
@@ -377,36 +450,36 @@ internal fun QuickFunctionsPage(
             onFinished = { flights = null },
         )
 
-        popupFor?.let { activity ->
-            val anchor = cardBounds[activity.id]
+        popupFor?.let { entry ->
+            val anchor = cardBounds[entry.id]
             if (anchor != null) {
                 ItemActionPopup(
-                    title = activity.label,
+                    title = entry.label,
                     anchor = anchor,
                     actions = listOf(
                         ItemPopupAction(
                             icon = MiuixIcons.ChevronBackward,
-                            enabled = orderedItems.indexOfFirst { it.id == activity.id } > 0,
-                            onClick = { moveAdded(activity, -1) },
+                            enabled = orderedItems.indexOfFirst { it.id == entry.id } > 0,
+                            onClick = { moveAdded(entry, -1) },
                         ),
                         ItemPopupAction(
                             icon = MiuixIcons.ChevronForward,
-                            enabled = orderedItems.indexOfFirst { it.id == activity.id } < orderedItems.lastIndex,
-                            onClick = { moveAdded(activity, 1) },
+                            enabled = orderedItems.indexOfFirst { it.id == entry.id } < orderedItems.lastIndex,
+                            onClick = { moveAdded(entry, 1) },
                         ),
                         ItemPopupAction(
                             icon = MiuixIcons.Edit,
                             onClick = {
-                                editing = activity
-                                editName = activity.label
-                                editIconUri = customIconUri(activity.id)
+                                editing = entry
+                                editName = entry.label
+                                editIconUri = customIconUri(entry.id)
                                 popupFor = null
                             },
                         ),
                         ItemPopupAction(
                             icon = MiuixIcons.Delete,
                             tint = MiuixTheme.colorScheme.error,
-                            onClick = { deleteAdded(activity) },
+                            onClick = { deleteAdded(entry) },
                         ),
                     ),
                     onDismiss = { popupFor = null },
@@ -422,12 +495,12 @@ internal fun QuickFunctionsPage(
     ) {
         Column(modifier = Modifier.padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(pending?.label.orEmpty())
-            Text(pending?.component?.flattenToString().orEmpty(), color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            Text(pending?.payload.orEmpty(), color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 TextButton(text = stringResource(R.string.cancel), onClick = { showSaveSheet = false; pending = null }, modifier = Modifier.weight(1f))
                 Button(
                     onClick = {
-                        pending?.let { activity -> saved.value = addQuickActivity(prefs, activity.component) }
+                        pending?.let { entry -> saved.value = addQuickLaunchEntry(prefs, entry.payload) }
                         pending = null
                         showSaveSheet = false
                     },
@@ -443,18 +516,55 @@ internal fun QuickFunctionsPage(
         onDismissRequest = { showManualSheet = false },
     ) {
         Column(modifier = Modifier.padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            TextField(manualName, { manualName = it }, label = stringResource(R.string.quick_functions_name), singleLine = true)
-            TextField(manualPackage, { manualPackage = it }, label = stringResource(R.string.quick_functions_package), singleLine = true)
-            TextField(manualClass, { manualClass = it }, label = stringResource(R.string.quick_functions_activity), singleLine = true)
-            Button(
-                onClick = {
-                    val component = ComponentName(manualPackage.trim(), manualClass.trim())
-                    resolveActivity(context, component)?.let(::requestSave)
-                    showManualSheet = false
-                },
-                enabled = manualPackage.isNotBlank() && manualClass.isNotBlank(),
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text(stringResource(R.string.next)) }
+            // 第一行固定是「启动方式」，决定下面填组件还是填 URL。
+            // 用 Window 版下拉：弹窗本身就是 WindowBottomSheet，没有 Scaffold 可用 Overlay 版。
+            PreferenceDropdown(
+                title = stringResource(R.string.quick_functions_launch_mode),
+                summary = null,
+                icon = null,
+                items = listOf(
+                    stringResource(R.string.quick_functions_launch_mode_activity),
+                    stringResource(R.string.quick_functions_launch_mode_url),
+                ),
+                selectedIndex = manualKind,
+            ) { manualKind = it }
+            val normalizedUrl = QuickLaunchFormat.normalizeUrl(manualUrl)
+            if (manualKind == LAUNCH_KIND_URL) {
+                TextField(
+                    manualUrl,
+                    { manualUrl = it },
+                    label = stringResource(R.string.quick_functions_url),
+                    singleLine = true,
+                )
+                if (manualUrl.isNotBlank() && normalizedUrl == null) {
+                    Text(
+                        text = stringResource(R.string.quick_functions_url_invalid),
+                        color = MiuixTheme.colorScheme.error,
+                        fontSize = MiuixTheme.textStyles.body2.fontSize,
+                    )
+                }
+                Button(
+                    onClick = {
+                        normalizedUrl?.let { url -> requestSave(QuickLaunchEntry.ofUrl("", url)) }
+                        showManualSheet = false
+                    },
+                    enabled = normalizedUrl != null,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(stringResource(R.string.next)) }
+            } else {
+                TextField(manualName, { manualName = it }, label = stringResource(R.string.quick_functions_name), singleLine = true)
+                TextField(manualPackage, { manualPackage = it }, label = stringResource(R.string.quick_functions_package), singleLine = true)
+                TextField(manualClass, { manualClass = it }, label = stringResource(R.string.quick_functions_activity), singleLine = true)
+                Button(
+                    onClick = {
+                        val component = ComponentName(manualPackage.trim(), manualClass.trim())
+                        resolveActivity(context, component)?.let { requestSave(it.toLaunchEntry()) }
+                        showManualSheet = false
+                    },
+                    enabled = manualPackage.isNotBlank() && manualClass.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(stringResource(R.string.next)) }
+            }
         }
     }
 
@@ -464,7 +574,7 @@ internal fun QuickFunctionsPage(
         onDismissRequest = { editing = null },
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(editing?.component?.flattenToString().orEmpty(), color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            Text(editing?.payload.orEmpty(), color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
             TextField(editName, { editName = it }, label = stringResource(R.string.quick_functions_name), singleLine = true)
             Button(
                 onClick = { exportLauncher.launch("hyperdock-quick-launch.txt") },
@@ -484,8 +594,8 @@ internal fun QuickFunctionsPage(
                 )
                 Button(
                     onClick = {
-                        editing?.let { activity ->
-                            val id = activity.id
+                        editing?.let { entry ->
+                            val id = entry.id
                             val next = labels.value.filterNot { it.startsWith("$id=") }.toMutableSet()
                             if (editName.isNotBlank()) next += "$id=${editName.trim()}"
                             labels.value = next
@@ -718,7 +828,9 @@ internal fun QuickActivitiesPickerPage(
                 TextButton(text = stringResource(R.string.cancel), onClick = { showSaveSheet = false; pending = null }, modifier = Modifier.weight(1f))
                 Button(
                     onClick = {
-                        pending?.let { activity -> saved.value = addQuickActivity(prefs, activity.component) }
+                        pending?.let { activity ->
+                            saved.value = addQuickLaunchEntry(prefs, activity.component.flattenToString())
+                        }
                         pending = null
                         showSaveSheet = false
                         onAdded()
@@ -775,11 +887,11 @@ private fun Drawable.toBitmap(context: Context): Bitmap {
 
 @Composable
 private fun QuickFunctionsGrid(
-    items: List<QuickActivity>,
+    items: List<QuickLaunchEntry>,
     iconUris: Set<String> = emptySet(),
     hiddenIds: Set<String> = emptySet(),
     onBounds: (String, WindowRect) -> Unit = { _, _ -> },
-    onClick: (QuickActivity) -> Unit,
+    onClick: (QuickLaunchEntry) -> Unit,
 ) {
     if (items.isEmpty()) return
     BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -789,29 +901,29 @@ private fun QuickFunctionsGrid(
         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
             items.chunked(columns).forEach { row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
-                    row.forEach { activity ->
+                    row.forEach { entry ->
                         Column(
                             Modifier.width(cardWidth),
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
                             Card(
-                                onClick = { onClick(activity) },
+                                onClick = { onClick(entry) },
                                 modifier = Modifier
                                     .size(cardWidth)
-                                    .onGloballyPositioned { onBounds(activity.id, it.boundsInWindow()) }
-                                    .graphicsLayer { alpha = if (activity.id in hiddenIds) 0f else 1f },
+                                    .onGloballyPositioned { onBounds(entry.id, it.boundsInWindow()) }
+                                    .graphicsLayer { alpha = if (entry.id in hiddenIds) 0f else 1f },
                                 cornerRadius = 18.dp,
                                 insideMargin = PaddingValues(0.dp),
                             ) {
                                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                     QuickFunctionIcon(
-                                        activity,
-                                        iconUris.firstOrNull { it.startsWith("${activity.id}=") }?.substringAfter('='),
+                                        entry,
+                                        iconUris.firstOrNull { it.startsWith("${entry.id}=") }?.substringAfter('='),
                                     )
                                 }
                             }
                             Spacer(Modifier.height(8.dp))
-                            Text(activity.label, maxLines = 2, modifier = Modifier.fillMaxWidth())
+                            Text(entry.label, maxLines = 2, modifier = Modifier.fillMaxWidth())
                         }
                     }
                 }
@@ -821,39 +933,49 @@ private fun QuickFunctionsGrid(
 }
 
 @Composable
-private fun QuickFunctionIcon(activity: QuickActivity, customUri: String? = null) {
+private fun QuickFunctionIcon(entry: QuickLaunchEntry, customUri: String? = null) {
     val context = LocalContext.current
-    val bitmapState = produceState<Bitmap?>(initialValue = null, activity.component.packageName, customUri) {
+    val packageName = entry.component?.packageName
+    val bitmapState = produceState<Bitmap?>(initialValue = null, packageName, entry.url, customUri) {
         value = withContext(Dispatchers.IO) {
             runCatching {
-                if (!customUri.isNullOrBlank()) {
-                    context.contentResolver.openInputStream(Uri.parse(customUri))?.use { input ->
+                when {
+                    !customUri.isNullOrBlank() -> context.contentResolver.openInputStream(Uri.parse(customUri))?.use { input ->
                         BitmapFactory.decodeStream(input)
                     }
-                } else {
-                    val drawable = context.packageManager.getApplicationIcon(activity.component.packageName)
-                    val size = 96
-                    Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also { bitmap ->
-                        val canvas = Canvas(bitmap)
-                        // 同上：contain 放置，避免长方形图标被拉伸成正方形。
-                        val bounds = IconNormalizer.containBounds(drawable, size)
-                        drawable.setBounds(bounds.left, bounds.top, bounds.right, bounds.bottom)
-                        drawable.draw(canvas)
+                    // URL 条目没有应用图标可解码，留给下面分支渲染内置图标。
+                    packageName == null -> null
+                    else -> {
+                        val drawable = context.packageManager.getApplicationIcon(packageName)
+                        val size = 96
+                        Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also { bitmap ->
+                            val canvas = Canvas(bitmap)
+                            // 同上：contain 放置，避免长方形图标被拉伸成正方形。
+                            val bounds = IconNormalizer.containBounds(drawable, size)
+                            drawable.setBounds(bounds.left, bounds.top, bounds.right, bounds.bottom)
+                            drawable.draw(canvas)
+                        }
                     }
                 }
             }.getOrNull()
         }
     }
     val bitmap = bitmapState.value
-    if (bitmap != null) {
-        Image(
+    when {
+        bitmap != null -> Image(
             bitmap.asImageBitmap(),
-            contentDescription = activity.label,
+            contentDescription = entry.label,
             modifier = Modifier.size(42.dp),
             contentScale = ContentScale.Crop,
         )
-    } else {
-        Text("•", fontSize = 32.sp, color = MiuixTheme.colorScheme.primary)
+        // URL 条目没有宿主应用可借图标，用模块内置矢量图；矢量是纯黑，需按主题着色。
+        entry.isUrl -> Image(
+            painter = painterResource(R.drawable.ic_quick_launch_url),
+            contentDescription = entry.label,
+            colorFilter = ColorFilter.tint(MiuixTheme.colorScheme.primary),
+            modifier = Modifier.size(28.dp),
+        )
+        else -> Text("•", fontSize = 32.sp, color = MiuixTheme.colorScheme.primary)
     }
 }
 

@@ -11,6 +11,7 @@ import android.graphics.PorterDuff
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.Color
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -19,6 +20,7 @@ import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.TextView
 import io.github.z1812.hyperdock.PrefKeys
+import io.github.z1812.hyperdock.quicklaunch.QuickLaunchFormat
 import io.github.z1812.hyperdock.systemtile.SystemTileCatalogProtocol
 import io.github.z1812.hyperdock.systemtile.SystemTileSpecs
 import io.github.z1812.hyperdock.utils.IconNormalizer
@@ -78,6 +80,21 @@ internal object SidebarShortcutController {
      */
     private const val ICON_CANVAS_SIZE = 256
 
+    /**
+     * 快速启动里应用图标的圆角半径（占图标边长比例）。
+     *
+     * MIUI 会给应用图标套一个圆角容器，而静态（非自适应）图标本身是满幅方图，
+     * 不切就是"方形、没有圆角"。0.2 是安全上限 —— 用了遮罩的自适应图标不受影响，
+     * 理由见 [IconNormalizer] 的圆角裁切说明。
+     */
+    private const val QUICK_LAUNCH_ICON_CORNER_PERCENT = 0.2f
+
+    /** 模块内置 drawable 的资源名，经 createPackageContext 跨进程按名取用。 */
+    private const val HYPER_ISLAND_ICON_RES = "ic_focus_ticker_screen_recorder"
+
+    /** URL 快速启动条目的兜底图标。 */
+    private const val URL_ICON_RES = "ic_quick_launch_url"
+
     /** 系统磁贴 drawable 的查找顺序：先 SystemUI 自带磁贴图标，再框架通用图标。 */
     private val DRAWABLE_PACKAGES = arrayOf("com.android.systemui", "android")
 
@@ -107,7 +124,13 @@ internal object SidebarShortcutController {
      * [SystemTileCatalogStore] 的 iconCache 保证复用）只算一次即可。key 用弱引用，
      * source 被回收时缓存自动失效。
      */
-    private val normalizedIconCache = java.util.WeakHashMap<Drawable, Drawable>()
+    /**
+     * 归一化结果缓存：`source 实例 → (处理参数 → 结果)`。
+     *
+     * 内层按参数再分一层：同一个 drawable 实例在两条链路上要求不同的处理
+     * （磁贴剔白底、应用图标切圆角），只按 source 缓存会把先到的那份串给另一个。
+     */
+    private val normalizedIconCache = java.util.WeakHashMap<Drawable, MutableMap<String, Drawable>>()
     @Volatile private var stateReceiverInstalled = false
     /** 记录本 Hook 创建的标题对象，避免使用无效 textRes 作为识别标记。 */
     private val injectedTitles = Collections.newSetFromMap(WeakHashMap<Any, Boolean>())
@@ -1048,19 +1071,27 @@ internal object SidebarShortcutController {
                 null,
             )
         }
-        if (id.startsWith("activity:")) {
-            val spec = parseActivityShortcut(id) ?: return null
-            val component = ComponentName.unflattenFromString(normalizeComponentId(spec.componentId)) ?: return null
+        if (QuickLaunchFormat.isQuickLaunch(id)) {
+            val entryId = QuickLaunchFormat.shortcutEntryId(id) ?: return null
+            val payload = QuickLaunchFormat.shortcutPayload(id) ?: return null
             val context = appContext() ?: return null
+            val customIcon = ConfigManager.getStringSet(PrefKeys.QUICK_FUNCTIONS_ICON_URIS, emptySet())
+                .firstOrNull { it.startsWith("$entryId=") }
+                ?.substringAfter('=')
+            val customLabel = ConfigManager.getStringSet(PrefKeys.QUICK_FUNCTIONS_LABELS, emptySet())
+                .firstOrNull { it.startsWith("$entryId=") }
+                ?.substringAfter('=')
+            // URL 条目没有组件可查，也不该因查不到而消失；标签退回主机名，
+            // 与模块侧 QuickLaunchFormat.defaultLabel 同源，两侧显示一致。
+            if (QuickLaunchFormat.isUrl(payload)) {
+                val url = QuickLaunchFormat.urlOf(payload)
+                if (url.isBlank()) return null
+                return ShortcutTarget("", "", customLabel ?: QuickLaunchFormat.defaultLabel(url), customIcon)
+            }
+            val component = ComponentName.unflattenFromString(normalizeComponentId(payload)) ?: return null
             val activityInfo = runCatching {
                 context.packageManager.getActivityInfo(component, 0)
             }.getOrNull() ?: return null
-            val customIcon = ConfigManager.getStringSet(PrefKeys.QUICK_FUNCTIONS_ICON_URIS, emptySet())
-                .firstOrNull { it.startsWith("${spec.entryId}=") }
-                ?.substringAfter('=')
-            val customLabel = ConfigManager.getStringSet(PrefKeys.QUICK_FUNCTIONS_LABELS, emptySet())
-                .firstOrNull { it.startsWith("${spec.entryId}=") }
-                ?.substringAfter('=')
             return ShortcutTarget(
                 component.packageName,
                 component.className,
@@ -1091,20 +1122,13 @@ internal object SidebarShortcutController {
         val iconUri: String?,
     )
 
-    private data class ActivityShortcutSpec(val entryId: String, val componentId: String)
-
-    private fun parseActivityShortcut(id: String): ActivityShortcutSpec? {
-        val payload = id.removePrefix("activity:")
-        val separator = payload.lastIndexOf('|')
-        if (separator <= 0 || separator >= payload.lastIndex) return null
-        return ActivityShortcutSpec(
-            entryId = payload.substring(separator + 1),
-            componentId = payload.substring(0, separator),
-        )
-    }
-
-    private fun activityComponentId(id: String): String =
-        parseActivityShortcut(id)?.componentId ?: id.removePrefix("activity:")
+    /**
+     * 取快速启动 id 的 payload：活动是组件名，URL 是 `url:...`。
+     *
+     * 拼装/解析规则统一在 [QuickLaunchFormat]，这里只做"解析失败时退回裸 id"的兜底。
+     */
+    private fun quickLaunchPayload(id: String): String =
+        QuickLaunchFormat.shortcutPayload(id) ?: id.removePrefix(QuickLaunchFormat.SHORTCUT_ID_PREFIX)
 
     /** QuickInfo.icon 使用 Android 标准资源 URI，避免依赖 MIUI 私有 res:/ 方言。 */
     private fun rawApplicationIconUri(
@@ -1181,27 +1205,35 @@ internal object SidebarShortcutController {
             ?: return
         val quickInfo = quickInfoFromModel(model) ?: return
         val componentId = quickInfoId(quickInfo).removePrefix(ID_PREFIX)
-        val customUri = if (componentId.startsWith("activity:")) null else customIconUri(componentId)
-        val drawable = if (componentId.startsWith("activity:")) {
-            loadIconUri(imageView.context, quickInfoValue(quickInfo, 1))
-                ?: loadActivityDrawable(imageView.context, activityComponentId(componentId))
-        } else {
-            // 非 activity 注入条目的 QuickInfo.icon 恒为空，宿主异步加载无从
-            // 触发；自定义图标与默认图标都在这里同步解码并烘焙着色。
-            loadIconUri(imageView.context, customUri)
-                ?: loadInjectedDrawable(imageView.context, componentId)
+        val isQuickLaunch = QuickLaunchFormat.isQuickLaunch(componentId)
+        val payload = quickLaunchPayload(componentId)
+        val customUri = if (isQuickLaunch) null else customIconUri(componentId)
+        val drawable = when {
+            // URL 条目没有组件可查：QuickInfo.icon 带的是用户自定义图标，没设过
+            // 就退回模块内置的 URL 图标（跨进程按资源名取，同 HyperIsland）。
+            isQuickLaunch && QuickLaunchFormat.isUrl(payload) ->
+                loadIconUri(imageView.context, quickInfoValue(quickInfo, 1))
+                    ?: moduleDrawable(imageView.context, URL_ICON_RES)
+            isQuickLaunch -> loadIconUri(imageView.context, quickInfoValue(quickInfo, 1))
+                ?: loadActivityDrawable(imageView.context, payload)
+            else -> {
+                // 非 activity 注入条目的 QuickInfo.icon 恒为空，宿主异步加载无从
+                // 触发；自定义图标与默认图标都在这里同步解码并烘焙着色。
+                loadIconUri(imageView.context, customUri)
+                    ?: loadInjectedDrawable(imageView.context, componentId)
+            }
         }
             ?: loadSystemDrawable(imageView.context, componentId)
             ?: imageView.context.getDrawable(android.R.drawable.ic_menu_info_details)
         val enabled = tileState[componentId] == true
         val colorIcon = colorIconEnabled(componentId)
         tileViews[componentId] = imageView
-        if (componentId.startsWith("activity:")) {
+        if (isQuickLaunch) {
             styleQuickLaunchIcon(imageView, drawable)
         } else {
             styleTileIcon(imageView, drawable, enabled, colorIcon)
         }
-        if (!componentId.startsWith("activity:") && queriedStates.add(componentId)) {
+        if (!isQuickLaunch && queriedStates.add(componentId)) {
             requestTileState(imageView.context, componentId)
         }
     }
@@ -1262,12 +1294,23 @@ internal object SidebarShortcutController {
 
     private fun findFieldOwner(instance: Any): Any = instance
 
+    /**
+     * 从模块 APK 里按资源名取 drawable。
+     *
+     * 安全中心的 AssetManager 没有加载模块的资源表，`getIdentifier(name, type, pkg)`
+     * 必须建立在 [Context.createPackageContext] 出来的上下文上，否则永远返回 0。
+     */
+    private fun moduleDrawable(context: Context, name: String): Drawable? = runCatching {
+        val packageContext = context.createPackageContext(
+            SystemTileCatalogProtocol.MODULE_PKG,
+            Context.CONTEXT_IGNORE_SECURITY,
+        )
+        val resId = packageContext.resources.getIdentifier(name, "drawable", packageContext.packageName)
+        if (resId == 0) null else packageContext.getDrawable(resId)
+    }.getOrNull()
+
     private fun loadInjectedDrawable(context: android.content.Context, id: String): Drawable? {
-        if (id.startsWith("hyperisland_")) return runCatching {
-            val packageContext = context.createPackageContext("io.github.z1812.hyperdock", Context.CONTEXT_IGNORE_SECURITY)
-            val resId = packageContext.resources.getIdentifier("ic_focus_ticker_screen_recorder", "drawable", packageContext.packageName)
-            packageContext.getDrawable(resId)
-        }.getOrNull()
+        if (id.startsWith("hyperisland_")) return moduleDrawable(context, HYPER_ISLAND_ICON_RES)
         val component = ComponentName.unflattenFromString(normalizeComponentId(id)) ?: return null
         return runCatching {
             val info = context.packageManager.getServiceInfo(component, 0)
@@ -1432,37 +1475,63 @@ internal object SidebarShortcutController {
      * @param trimWhitePlate 是否剔除"白底 + 图形"里的白底。磁贴图标要：白底会把
      *        中间的图形衬得偏小；应用图标不要：那里的白底是设计的一部分。
      */
-    private fun normalizedIcon(context: Context, source: Drawable, trimWhitePlate: Boolean): Drawable =
-        normalizedIconCache[source] ?: IconNormalizer
-            .normalizeDrawable(context, source, ICON_CANVAS_SIZE, trimWhitePlate = trimWhitePlate)
-            .also { normalizedIconCache[source] = it }
+    private fun normalizedIcon(
+        context: Context,
+        source: Drawable,
+        trimWhitePlate: Boolean,
+        cornerPercent: Float = 0f,
+    ): Drawable {
+        val slot = normalizedIconCache.getOrPut(source) { HashMap(2) }
+        return slot.getOrPut("$trimWhitePlate/$cornerPercent") {
+            IconNormalizer.normalizeDrawable(
+                context,
+                source,
+                ICON_CANVAS_SIZE,
+                trimWhitePlate = trimWhitePlate,
+                cornerPercent = cornerPercent,
+            )
+        }
+    }
 
     /**
      * Quick launch uses the real application artwork rather than the monochrome
-     * QS tile treatment. Keep a square viewport and let CENTER_CROP clip excess
-     * artwork, matching the sidebar's cover-style icon presentation.
+     * QS tile treatment. Keep the host's own geometry and let the drawable sit
+     * inside it, matching the sidebar's cover-style icon presentation.
      *
-     * 归一化后内容已铺满正方形画布，CENTER_CROP 到方形 viewport 即恰好吻合，
-     * 不再出现"画布一样大、画面只占一半"的偏小图标。
+     * **尺寸与圆角都跟原生条目走**：布局参数不覆写，只把磁贴样式先前改过的值
+     * 回填成原生的（[originalIconBounds]）。原生的应用图标由宿主布局决定大小、
+     * 由 IconCustomizer 套形状；我们唯一要做的就是别把它改掉 —— 之前写死
+     * `MATCH_PARENT` 会让图标铺满整个单元格，就是"全尺寸、大小不对"。
      */
     private fun styleQuickLaunchIcon(imageView: ImageView, source: Drawable?) {
-        imageView.layoutParams = imageView.layoutParams?.apply {
-            width = ViewGroup.LayoutParams.MATCH_PARENT
-            height = ViewGroup.LayoutParams.MATCH_PARENT
+        originalIconBounds[imageView]?.let { bounds ->
+            imageView.layoutParams = imageView.layoutParams?.apply {
+                width = bounds[0]
+                height = bounds[1]
+            }
         }
         imageView.setPadding(0, 0, 0, 0)
         imageView.translationX = 0f
-        imageView.scaleType = ImageView.ScaleType.CENTER_CROP
+        // 用 FIT_CENTER 而不是 CENTER_CROP：位图已归一化为正方形且内容铺满，
+        // 两个方向缩放一致；CROP 在非正方单元格里反而会把圆角切掉。
+        imageView.scaleType = ImageView.ScaleType.FIT_CENTER
         imageView.background = null
         imageView.imageTintList = null
         imageView.imageTintMode = null
         imageView.clearColorFilter()
         imageView.imageAlpha = 255
         // 同样先归一化：activity 图标常带大量透明边距（圆形图标尤其明显），
-        // 而 CENTER_CROP 只缩放画布、消不掉留白 —— 不处理就比同排的小一圈。
-        // 这里 trimWhitePlate 传 false：应用图标的白底是设计的一部分。
+        // 不处理就比同排的小一圈。trimWhitePlate 传 false（应用图标的白底是
+        // 设计的一部分），cornerPercent 传正值（静态图标本身是满幅方图，需要切圆角）。
         val display = source
-            ?.let { normalizedIcon(imageView.context, it, trimWhitePlate = false) }
+            ?.let {
+                normalizedIcon(
+                    imageView.context,
+                    it,
+                    trimWhitePlate = false,
+                    cornerPercent = QUICK_LAUNCH_ICON_CORNER_PERCENT,
+                )
+            }
             ?.mutate()?.apply {
                 clearColorFilter()
                 alpha = 255
@@ -1688,8 +1757,21 @@ internal object SidebarShortcutController {
                 styleTileIcon(view, drawable, enabled, colorIconEnabled(id))
             }
         }
-        if (id.startsWith("activity:")) {
-            val component = ComponentName.unflattenFromString(activityComponentId(id))
+        if (QuickLaunchFormat.isQuickLaunch(id)) {
+            val payload = quickLaunchPayload(id)
+            // URL 条目交给系统分发：http(s) 落到浏览器，自定义 scheme 落到声明它的应用。
+            // 与 activity 一样从安全中心进程 startActivity，必须带 NEW_TASK。
+            if (QuickLaunchFormat.isUrl(payload)) {
+                val url = QuickLaunchFormat.urlOf(payload)
+                if (url.isNotBlank()) {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    runCatching { context.startActivity(intent) }
+                        .onFailure { Log.w(TAG, "launch url failed: $url", it) }
+                }
+                return true
+            }
+            val component = ComponentName.unflattenFromString(payload)
                 ?: return true
             val intent = Intent().setComponent(component)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

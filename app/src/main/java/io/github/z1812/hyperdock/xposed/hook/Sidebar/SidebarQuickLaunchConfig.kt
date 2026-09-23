@@ -1,6 +1,7 @@
 package io.github.z1812.hyperdock.xposed.hook.Sidebar
 
 import io.github.z1812.hyperdock.PrefKeys
+import io.github.z1812.hyperdock.quicklaunch.QuickLaunchFormat
 import io.github.z1812.hyperdock.xposed.ConfigManager
 
 /** Reads the user-managed 快速启动 entries without touching shortcut settings. */
@@ -24,14 +25,21 @@ internal object SidebarQuickLaunchConfig {
         return recorded + unrecorded
     }
 
-    /** QUICK_FUNCTIONS_ADDED 的每个条目形如 `entryId|component`，映射为 `activity:component|entryId`。 */
+    /**
+     * `QUICK_FUNCTIONS_ADDED` 的每个条目形如 `entryId|payload`，映射为
+     * `activity:<payload>|<entryId>`。
+     *
+     * payload **原样透传**：活动是组件名，URL 是 `url:...`（见 [QuickLaunchFormat]）。
+     * 启动方式由 hook 侧按 payload 前缀分流，所以这里不需要区分，URL 条目也就自动
+     * 跟着走完了标签、图标、排序、删除的全套链路。
+     */
     private fun rawEntries(): List<String> = ConfigManager.getStringSet(PrefKeys.QUICK_FUNCTIONS_ADDED, emptySet())
         .asSequence()
         .filter(String::isNotBlank)
-        .filter { '|' in it }
-        .map { entry ->
-            val parts = entry.split('|', limit = 2)
-            "activity:${parts[1]}|${parts.first()}"
+        .mapNotNull { entry ->
+            val entryId = QuickLaunchFormat.storageEntryId(entry) ?: return@mapNotNull null
+            val payload = QuickLaunchFormat.storagePayload(entry) ?: return@mapNotNull null
+            QuickLaunchFormat.shortcutId(entryId, payload)
         }
         .toList()
 }
