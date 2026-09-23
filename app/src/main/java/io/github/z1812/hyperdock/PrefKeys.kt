@@ -38,6 +38,14 @@ object PrefKeys {
     const val SHORTCUTS_CUSTOM_ICON_URIS = "shortcuts_custom_icon_uris"
     const val SHORTCUTS_COLOR_ICONS = "shortcuts_color_icons"
 
+    // 快捷方式 · 样式自定义。开关打开后，下面四个颜色覆盖磁贴默认配色，
+    // 均以 ARGB（无符号 32 位）存为 Long，见 ShortcutTileStyle。
+    const val SHORTCUTS_CUSTOM_STYLE = "shortcuts_custom_style"
+    const val SHORTCUTS_STYLE_BACKGROUND_ON = "shortcuts_style_background_on"
+    const val SHORTCUTS_STYLE_BACKGROUND_OFF = "shortcuts_style_background_off"
+    const val SHORTCUTS_STYLE_ICON_ON = "shortcuts_style_icon_on"
+    const val SHORTCUTS_STYLE_ICON_OFF = "shortcuts_style_icon_off"
+
     // 自定义快捷功能（显式 Activity）
     const val QUICK_FUNCTIONS_ENABLED = "quick_functions_enabled"
     const val QUICK_FUNCTIONS_ADDED = "quick_functions_added"
@@ -89,6 +97,11 @@ object PrefKeys {
         SHORTCUTS_CUSTOM_LABELS,
         SHORTCUTS_CUSTOM_ICON_URIS,
         SHORTCUTS_COLOR_ICONS,
+        SHORTCUTS_CUSTOM_STYLE,
+        SHORTCUTS_STYLE_BACKGROUND_ON,
+        SHORTCUTS_STYLE_BACKGROUND_OFF,
+        SHORTCUTS_STYLE_ICON_ON,
+        SHORTCUTS_STYLE_ICON_OFF,
         QUICK_FUNCTIONS_ENABLED,
         QUICK_FUNCTIONS_ADDED,
         QUICK_FUNCTIONS_ORDER,

@@ -1431,19 +1431,29 @@ internal object SidebarShortcutController {
         // 用 FIT_CENTER 而不是 CENTER_INSIDE：后者在 drawable 比控件小时**不放大**，
         // 归一化一旦退化（返回原图）就会原样偏小；FIT_CENTER 两个方向都兜住。
         imageView.scaleType = ImageView.ScaleType.FIT_CENTER
+        // 样式自定义：开关打开时整套配色换成用户在设置页选的那四个；关掉时原样走下面的
+        // 硬编码分支，视觉与改造前完全一致。颜色都是 ARGB —— 默认底色本身带 alpha
+        // （磁贴要透出侧边栏底衬），GradientDrawable.setColor 与 setTint 都吃 ARGB，
+        // alpha 通道原样保留、不做任何裁剪。
+        val customStyle = ShortcutStyleConfig.enabled
         imageView.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = 12f * density
             // 彩色图标开启时，激活态改用强调色背景，图标本身保持原色。
             setColor(
                 when {
+                    customStyle -> ShortcutStyleConfig.background(enabled)
                     colorIcon && enabled -> Color.parseColor("#3982FA")
                     enabled -> Color.parseColor("#CCE7E7E9")
                     else -> Color.parseColor("#CC4A4A50")
                 },
             )
         }
-        val tintColor = Color.parseColor(if (enabled) "#3982FA" else "#F5F5F7")
+        val tintColor = if (customStyle) {
+            ShortcutStyleConfig.iconColor(enabled)
+        } else {
+            Color.parseColor(if (enabled) "#3982FA" else "#F5F5F7")
+        }
         val iconAlpha = if (enabled) 255 else 204
         if (colorIcon) {
             imageView.imageTintList = null

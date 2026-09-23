@@ -59,6 +59,14 @@
     <string name="shortcuts_summary">Show custom shortcuts in the all-apps panel and dock</string>
     <string name="shortcut_auto_close">Auto-close sidebar</string>
     <string name="shortcut_auto_close_summary">Collapse the sidebar automatically after tapping a shortcut</string>
+    <string name="shortcut_custom_style">Custom style</string>
+    <string name="shortcut_custom_style_summary">Customize the background and icon colors for the off and on states</string>
+    <string name="shortcut_style_background_off">Off-state background</string>
+    <string name="shortcut_style_background_on">On-state background</string>
+    <string name="shortcut_style_icon_on">On-state color</string>
+    <string name="shortcut_style_icon_off">Off-state color</string>
+    <string name="color_picker_value">Color value</string>
+    <string name="color_picker_invalid">Enter #RRGGBB or #AARRGGBB</string>
     <string name="edit">Edit</string>
     <string name="item_name">Name</string>
     <string name="color_icon">Color icon</string>

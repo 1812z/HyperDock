@@ -14,6 +14,16 @@ import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.annotation.StringRes
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,9 +48,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect as WindowRect
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -52,7 +64,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.z1812.hyperdock.PrefKeys
 import io.github.z1812.hyperdock.R
+import io.github.z1812.hyperdock.shortcutstyle.ShortcutTileStyle
 import io.github.z1812.hyperdock.systemtile.SystemTileCatalogCache
+import io.github.z1812.hyperdock.compose.component.ColorPickerDialog
+import io.github.z1812.hyperdock.compose.component.ColorPreference
 import io.github.z1812.hyperdock.compose.component.DetailPage
 import io.github.z1812.hyperdock.compose.component.ItemActionPopup
 import io.github.z1812.hyperdock.compose.component.ItemEditDialog
@@ -66,6 +81,7 @@ import io.github.z1812.hyperdock.compose.data.PrefsRepository
 import io.github.z1812.hyperdock.compose.data.ShortcutCatalog
 import io.github.z1812.hyperdock.compose.data.ShortcutItem
 import io.github.z1812.hyperdock.compose.data.rememberBooleanPreference
+import io.github.z1812.hyperdock.compose.data.rememberLongPreference
 import io.github.z1812.hyperdock.compose.data.rememberStringPreference
 import io.github.z1812.hyperdock.compose.data.rememberStringSetPreference
 import io.github.z1812.hyperdock.utils.IconNormalizer
@@ -97,6 +113,39 @@ internal fun ShortcutPage(
     val customLabels = rememberStringSetPreference(prefs, KEY_SHORTCUTS_CUSTOM_LABELS)
     val customIcons = rememberStringSetPreference(prefs, KEY_SHORTCUTS_CUSTOM_ICON_URIS)
     val colorIcons = rememberStringSetPreference(prefs, KEY_SHORTCUTS_COLOR_ICONS)
+    val customStyle = rememberBooleanPreference(prefs, KEY_SHORTCUTS_CUSTOM_STYLE, false)
+    // 四个色槽各记一个 Long 偏好，再按槽位取用。没有塞进 Map 是因为
+    // rememberLongPreference 是 @Composable，写在 mapOf 的实参位置上会被编译器
+    // 当作非 composable 上下文调用。
+    val styleBackgroundOff = rememberLongPreference(
+        prefs,
+        PrefKeys.SHORTCUTS_STYLE_BACKGROUND_OFF,
+        ShortcutTileStyle.pack(ShortcutTileStyle.DEFAULT_BACKGROUND_OFF),
+    )
+    val styleBackgroundOn = rememberLongPreference(
+        prefs,
+        PrefKeys.SHORTCUTS_STYLE_BACKGROUND_ON,
+        ShortcutTileStyle.pack(ShortcutTileStyle.DEFAULT_BACKGROUND_ON),
+    )
+    val styleIconOn = rememberLongPreference(
+        prefs,
+        PrefKeys.SHORTCUTS_STYLE_ICON_ON,
+        ShortcutTileStyle.pack(ShortcutTileStyle.DEFAULT_ICON_ON),
+    )
+    val styleIconOff = rememberLongPreference(
+        prefs,
+        PrefKeys.SHORTCUTS_STYLE_ICON_OFF,
+        ShortcutTileStyle.pack(ShortcutTileStyle.DEFAULT_ICON_OFF),
+    )
+
+    fun styleColorState(slot: StyleColorSlot) = when (slot) {
+        StyleColorSlot.BACKGROUND_OFF -> styleBackgroundOff
+        StyleColorSlot.BACKGROUND_ON -> styleBackgroundOn
+        StyleColorSlot.ICON_ON -> styleIconOn
+        StyleColorSlot.ICON_OFF -> styleIconOff
+    }
+
+    var styleColorDialog by remember { mutableStateOf<StyleColorSlot?>(null) }
     var catalog by remember { mutableStateOf(ShortcutCatalog.all(context)) }
     var flights by remember { mutableStateOf<List<ItemFlight>?>(null) }
     var popupFor by remember { mutableStateOf<ShortcutItem?>(null) }
@@ -275,6 +324,48 @@ internal fun ShortcutPage(
                         autoClose.value = it
                         prefs.putBoolean(KEY_SHORTCUTS_AUTO_CLOSE, it)
                     }
+                    PreferenceSwitch(
+                        title = stringResource(R.string.shortcut_custom_style),
+                        summary = stringResource(R.string.shortcut_custom_style_summary),
+                        icon = null,
+                        checked = customStyle.value,
+                        enabled = enabled.value,
+                    ) {
+                        customStyle.value = it
+                        prefs.putBoolean(KEY_SHORTCUTS_CUSTOM_STYLE, it)
+                    }
+                    // 展开/收起沿用设置页既有的参数（见 SidebarBehaviorPage），
+                    // 保证"开关下方长出内容"的手感与其它页面一致：y 方向展开为主，
+                    // 叠一点上位移和淡入，避免突然撑开显得生硬。
+                    AnimatedVisibility(
+                        visible = customStyle.value,
+                        enter = expandVertically(
+                            animationSpec = tween(280, easing = FastOutSlowInEasing),
+                            expandFrom = Alignment.Top,
+                        ) + slideInVertically(
+                            animationSpec = tween(280, easing = FastOutSlowInEasing),
+                            initialOffsetY = { -it / 2 },
+                        ) + fadeIn(tween(180)),
+                        exit = shrinkVertically(
+                            animationSpec = tween(220, easing = FastOutSlowInEasing),
+                            shrinkTowards = Alignment.Top,
+                        ) + slideOutVertically(
+                            animationSpec = tween(220, easing = FastOutSlowInEasing),
+                            targetOffsetY = { -it / 2 },
+                        ) + fadeOut(tween(140)),
+                    ) {
+                        // 必须包一层 Column：AnimatedVisibility 的内容不是 ColumnScope，
+                        // 直接并排放四个行会互相重叠。
+                        Column {
+                            StyleColorSlot.values().forEach { slot ->
+                                ColorPreference(
+                                    title = stringResource(slot.titleRes),
+                                    color = Color(styleColorState(slot).value.toInt()),
+                                    onClick = { styleColorDialog = slot },
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -322,6 +413,28 @@ internal fun ShortcutPage(
                     hyperIslandPending = null
                 },
                 modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        styleColorDialog?.let { slot ->
+            val state = styleColorState(slot)
+            ColorPickerDialog(
+                show = true,
+                title = stringResource(slot.titleRes),
+                color = Color(state.value.toInt()),
+                defaultColor = Color(slot.defaultArgb),
+                onDismiss = { styleColorDialog = null },
+                onSave = { picked ->
+                    // 点「保存」才落盘。写盘会经 HyperDockApp 同步到 Hook 进程并触发侧边栏
+                    // 重刷，所以保存后无需重启作用域。
+                    //
+                    // 存无符号 32 位 ARGB：alpha 一并保留。调色板带透明度滑块，
+                    // 用户选的半透明底是有效配置（磁贴要透出侧边栏底衬）。
+                    val packed = ShortcutTileStyle.pack(picked.toArgb())
+                    state.value = packed
+                    prefs.putLong(slot.key, packed)
+                    styleColorDialog = null
+                },
             )
         }
 
@@ -874,3 +987,39 @@ private const val KEY_SHORTCUTS_AUTO_CLOSE = PrefKeys.SHORTCUTS_AUTO_CLOSE
 private const val KEY_SHORTCUTS_CUSTOM_LABELS = PrefKeys.SHORTCUTS_CUSTOM_LABELS
 private const val KEY_SHORTCUTS_CUSTOM_ICON_URIS = PrefKeys.SHORTCUTS_CUSTOM_ICON_URIS
 private const val KEY_SHORTCUTS_COLOR_ICONS = PrefKeys.SHORTCUTS_COLOR_ICONS
+private const val KEY_SHORTCUTS_CUSTOM_STYLE = PrefKeys.SHORTCUTS_CUSTOM_STYLE
+
+/**
+ * 「样式自定义」里可配的四个色槽。
+ *
+ * 顺序即界面上从上到下的顺序：先背景、后图标，每组都是先关闭态、后开启态。
+ * 落盘键、标题、默认色都绑在同一个枚举项上，避免 UI 和写盘各维护一份映射表
+ * （对错一次就会写串色，或"恢复默认"回到一个并不是默认值的颜色）。
+ * 默认色直接引用 [ShortcutTileStyle] 的常量 —— Hook 侧读的也是同一份，两侧不会漂移。
+ */
+private enum class StyleColorSlot(
+    val key: String,
+    @StringRes val titleRes: Int,
+    val defaultArgb: Int,
+) {
+    BACKGROUND_OFF(
+        PrefKeys.SHORTCUTS_STYLE_BACKGROUND_OFF,
+        R.string.shortcut_style_background_off,
+        ShortcutTileStyle.DEFAULT_BACKGROUND_OFF,
+    ),
+    BACKGROUND_ON(
+        PrefKeys.SHORTCUTS_STYLE_BACKGROUND_ON,
+        R.string.shortcut_style_background_on,
+        ShortcutTileStyle.DEFAULT_BACKGROUND_ON,
+    ),
+    ICON_ON(
+        PrefKeys.SHORTCUTS_STYLE_ICON_ON,
+        R.string.shortcut_style_icon_on,
+        ShortcutTileStyle.DEFAULT_ICON_ON,
+    ),
+    ICON_OFF(
+        PrefKeys.SHORTCUTS_STYLE_ICON_OFF,
+        R.string.shortcut_style_icon_off,
+        ShortcutTileStyle.DEFAULT_ICON_OFF,
+    ),
+}

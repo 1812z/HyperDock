@@ -56,6 +56,14 @@
     <string name="shortcuts_summary">在全部应用面板与侧边栏展示自定义快捷方式</string>
     <string name="shortcut_auto_close">自动关闭侧边栏</string>
     <string name="shortcut_auto_close_summary">点击快捷方式后自动收起侧边栏</string>
+    <string name="shortcut_custom_style">样式自定义</string>
+    <string name="shortcut_custom_style_summary">自定义快捷方式在关闭与开启状态下的背景和图标颜色</string>
+    <string name="shortcut_style_background_off">关闭状态背景</string>
+    <string name="shortcut_style_background_on">开启状态背景</string>
+    <string name="shortcut_style_icon_on">开启状态颜色</string>
+    <string name="shortcut_style_icon_off">关闭状态颜色</string>
+    <string name="color_picker_value">颜色值</string>
+    <string name="color_picker_invalid">请输入 #RRGGBB 或 #AARRGGBB</string>
     <string name="edit">编辑</string>
     <string name="item_name">名称</string>
     <string name="color_icon">彩色图标</string>
