@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -38,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect as WindowRect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
@@ -527,6 +529,12 @@ internal fun QuickFunctionsPage(
                     stringResource(R.string.quick_functions_launch_mode_url),
                 ),
                 selectedIndex = manualKind,
+                // 这一行是裸放在弹窗 Column 里的（不像设置页那样有 Card 兜住形状），
+                // 而 miuix 的 MiuixIndication 按下/hover 时画的是直角 drawRect
+                // （其 KDoc 原话："draws a rectangular overlay when pressed"），
+                // 而且下拉展开期间会一直保持 —— 不裁就是横贯弹窗的一整块直角高亮。
+                // 圆角取 ButtonDefaults.CornerRadius，和同屏那几个 miuix 按钮同源。
+                modifier = Modifier.clip(RoundedCornerShape(ButtonDefaults.CornerRadius)),
             ) { manualKind = it }
             val normalizedUrl = QuickLaunchFormat.normalizeUrl(manualUrl)
             if (manualKind == LAUNCH_KIND_URL) {

@@ -82,6 +82,7 @@ internal fun PreferenceDropdown(
     selectedIndex: Int,
     enabled: Boolean = true,
     insideMargin: PaddingValues = SettingsItemMargin,
+    modifier: Modifier = Modifier,
     onSelectedIndexChange: (Int) -> Unit,
 ) {
     WindowDropdownPreference(
@@ -92,6 +93,11 @@ internal fun PreferenceDropdown(
         enabled = enabled,
         startAction = icon?.let { image -> { SettingsIcon(image) } },
         insideMargin = insideMargin,
+        // modifier 会落在 BasicComponent 最外层的 Column 上，排在它内部的 clickable 之前，
+        // 所以调用方传进来的裁剪形状能连同 clickable 画的那层指示器一起裁掉 ——
+        // 这是给"按下/hover 高亮"加圆角的唯一入口（miuix 的 MiuixIndication 是直角
+        // drawRect，组件本身没有 cornerRadius 参数）。
+        modifier = modifier,
         onSelectedIndexChange = onSelectedIndexChange,
     )
 }
