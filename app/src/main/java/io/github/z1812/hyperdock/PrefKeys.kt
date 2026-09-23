@@ -41,6 +41,7 @@ object PrefKeys {
     // 自定义快捷功能（显式 Activity）
     const val QUICK_FUNCTIONS_ENABLED = "quick_functions_enabled"
     const val QUICK_FUNCTIONS_ADDED = "quick_functions_added"
+    const val QUICK_FUNCTIONS_ORDER = "quick_functions_order"
     const val QUICK_FUNCTIONS_ICON_URIS = "quick_functions_icon_uris"
     const val QUICK_FUNCTIONS_LABELS = "quick_functions_labels"
 
@@ -83,6 +84,7 @@ object PrefKeys {
         SHORTCUTS_COLOR_ICONS,
         QUICK_FUNCTIONS_ENABLED,
         QUICK_FUNCTIONS_ADDED,
+        QUICK_FUNCTIONS_ORDER,
         QUICK_FUNCTIONS_ICON_URIS,
         QUICK_FUNCTIONS_LABELS,
         SIDEBAR_SECTION_VISIBILITY,

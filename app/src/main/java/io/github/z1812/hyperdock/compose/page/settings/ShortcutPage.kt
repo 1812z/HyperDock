@@ -13,9 +13,6 @@ import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,23 +24,17 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect as WindowRect
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.asImageBitmap
@@ -52,19 +43,18 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import io.github.z1812.hyperdock.PrefKeys
 import io.github.z1812.hyperdock.R
 import io.github.z1812.hyperdock.compose.component.DetailPage
 import io.github.z1812.hyperdock.compose.component.ItemActionPopup
 import io.github.z1812.hyperdock.compose.component.ItemEditDialog
+import io.github.z1812.hyperdock.compose.component.ItemFlight
+import io.github.z1812.hyperdock.compose.component.ItemFlyOverlay
 import io.github.z1812.hyperdock.compose.component.ItemPopupAction
 import io.github.z1812.hyperdock.compose.component.PreferenceSwitch
 import io.github.z1812.hyperdock.compose.component.SectionTitle
@@ -87,15 +77,6 @@ import top.yukonga.miuix.kmp.icon.extended.Edit
 import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
-import kotlin.math.PI
-import kotlin.math.abs
-import kotlin.math.roundToInt
-import kotlin.math.sin
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withTimeoutOrNull
 
 @Composable
 internal fun ShortcutPage(
@@ -111,7 +92,7 @@ internal fun ShortcutPage(
     val customIcons = rememberStringSetPreference(prefs, KEY_SHORTCUTS_CUSTOM_ICON_URIS)
     val colorIcons = rememberStringSetPreference(prefs, KEY_SHORTCUTS_COLOR_ICONS)
     val catalog = remember { ShortcutCatalog.all(context) }
-    var flights by remember { mutableStateOf<List<Flight>?>(null) }
+    var flights by remember { mutableStateOf<List<ItemFlight>?>(null) }
     var popupFor by remember { mutableStateOf<ShortcutItem?>(null) }
     var editing by remember { mutableStateOf<ShortcutItem?>(null) }
     var hyperIslandPending by remember { mutableStateOf<ShortcutItem?>(null) }
@@ -152,12 +133,11 @@ internal fun ShortcutPage(
         saveOrder(orderedAdded.map { it.id } + item.id)
         if (from != null) {
             flights = listOf(
-                Flight(
-                    item = item,
+                ItemFlight(
+                    id = item.id,
                     from = from,
                     adding = true,
-                    customIconUri = customIcon(item.id),
-                    colorIcon = item.id in colorIcons.value,
+                    content = { ShortcutIcon(item, customIcon(item.id), item.id in colorIcons.value) },
                 ),
             )
         }
@@ -185,12 +165,11 @@ internal fun ShortcutPage(
         prefs.putStringSet(KEY_SHORTCUTS_COLOR_ICONS, nextColors)
         if (from != null) {
             flights = listOf(
-                Flight(
-                    item = item,
+                ItemFlight(
+                    id = item.id,
                     from = from,
                     adding = false,
-                    customIconUri = customIcon(item.id),
-                    colorIcon = item.id in colorIcons.value,
+                    content = { ShortcutIcon(item, customIcon(item.id), item.id in colorIcons.value) },
                 ),
             )
         }
@@ -234,19 +213,17 @@ internal fun ShortcutPage(
         popupFor = null
         if (fromA != null && fromB != null) {
             flights = listOf(
-                Flight(
-                    item = item,
+                ItemFlight(
+                    id = item.id,
                     from = fromA,
                     adding = false,
-                    customIconUri = customIcon(item.id),
-                    colorIcon = item.id in colorIcons.value,
+                    content = { ShortcutIcon(item, customIcon(item.id), item.id in colorIcons.value) },
                 ),
-                Flight(
-                    item = other,
+                ItemFlight(
+                    id = other.id,
                     from = fromB,
                     adding = false,
-                    customIconUri = customIcon(other.id),
-                    colorIcon = other.id in colorIcons.value,
+                    content = { ShortcutIcon(other, customIcon(other.id), other.id in colorIcons.value) },
                 ),
             )
         }
@@ -294,7 +271,7 @@ internal fun ShortcutPage(
                     customIcons = customIcons.value,
                     colorIcons = colorIcons.value,
                     onItemClick = { popupFor = it },
-                    hiddenIds = flights?.map { it.item.id }?.toSet() ?: emptySet(),
+                    hiddenIds = flights?.map { it.id }?.toSet() ?: emptySet(),
                     onBounds = ::updateBounds,
                 )
             }
@@ -310,7 +287,7 @@ internal fun ShortcutPage(
                             customIcons = customIcons.value,
                             colorIcons = colorIcons.value,
                             onItemClick = ::requestAdd,
-                            hiddenIds = flights?.map { it.item.id }?.toSet() ?: emptySet(),
+                            hiddenIds = flights?.map { it.id }?.toSet() ?: emptySet(),
                             onBounds = ::updateBounds,
                         )
                     }
@@ -333,9 +310,10 @@ internal fun ShortcutPage(
             )
         }
 
-        ShortcutFlyOverlay(
+        ItemFlyOverlay(
             flights = flights,
             cardBounds = cardBounds,
+            cardWidth = ShortcutCardWidth,
             onFinished = { flights = null },
         )
 
@@ -471,124 +449,6 @@ private fun ShortcutCard(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-    }
-}
-
-/** 一次飞行动画批次：每张卡片记录源位置（window 坐标）与飞出屏幕的方向。 */
-private class Flight(
-    val item: ShortcutItem,
-    val from: WindowRect,
-    val adding: Boolean,
-    val customIconUri: String?,
-    val colorIcon: Boolean,
-)
-
-@Composable
-private fun ShortcutFlyOverlay(
-    flights: List<Flight>?,
-    cardBounds: Map<String, WindowRect>,
-    onFinished: () -> Unit,
-) {
-    var overlayPosition by remember { mutableStateOf(Offset.Zero) }
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .clipToBounds()
-            .onGloballyPositioned { coordinates ->
-                val topLeft = coordinates.boundsInWindow().topLeft
-                if (overlayPosition != topLeft) overlayPosition = topLeft
-            },
-    ) {
-        if (flights != null && flights.isNotEmpty()) {
-            key(flights) {
-                val progress = remember { Animatable(0f) }
-                var targets by remember { mutableStateOf<Map<String, WindowRect>?>(null) }
-
-                LaunchedEffect(flights) {
-                    // 交换时多张卡片同步飞行；等待所有新位置布局完成，超时则整批飞出屏幕。
-                    targets = withTimeoutOrNull(TARGET_WAIT_MILLIS) {
-                        coroutineScope {
-                            flights.map { flight ->
-                                async {
-                                    flight.item.id to snapshotFlow { cardBounds[flight.item.id] }
-                                        .first { it != null && it != flight.from }!!
-                                }
-                            }.awaitAll().toMap()
-                        }
-                    }
-                    progress.animateTo(1f, tween(FLY_DURATION_MILLIS, easing = FastOutSlowInEasing))
-                    onFinished()
-                }
-
-                flights.forEach { flight ->
-                    FlightCard(
-                        flight = flight,
-                        target = targets?.get(flight.item.id),
-                        fraction = progress.value,
-                        overlayPosition = overlayPosition,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun FlightCard(
-    flight: Flight,
-    target: WindowRect?,
-    fraction: Float,
-    overlayPosition: Offset,
-) {
-    val view = LocalView.current
-    val density = LocalDensity.current
-    val fromCenter = flight.from.center
-    val toCenter = target?.center ?: Offset(
-        x = fromCenter.x,
-        y = if (flight.adding) -view.height.toFloat() else view.height * 2f,
-    )
-    val cardHalf = with(density) { ShortcutCardWidth.toPx() / 2f }
-    val arcHeight = with(density) { FLY_ARC_HEIGHT.toPx() }
-    val dx = toCenter.x - fromCenter.x
-    val dy = toCenter.y - fromCenter.y
-    // 弧线朝运动主轴的垂直方向：横向交换时两张卡分别向上/向下绕行，纵向飞行时顺势加大弧度。
-    val arcDirection = if (abs(dy) >= abs(dx)) {
-        if (dy >= 0f) 1f else -1f
-    } else {
-        if (dx < 0f) 1f else -1f
-    }
-    val arc = sin(PI * fraction).toFloat() * arcHeight * arcDirection
-    val center = Offset(
-        x = fromCenter.x + dx * fraction,
-        y = fromCenter.y + dy * fraction + arc,
-    )
-    val scale = 1f + FLY_SCALE_PEAK * sin(PI * fraction).toFloat()
-
-    Box(
-        modifier = Modifier
-            .offset {
-                IntOffset(
-                    x = (center.x - overlayPosition.x - cardHalf).roundToInt(),
-                    y = (center.y - overlayPosition.y - cardHalf).roundToInt(),
-                )
-            }
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            },
-    ) {
-        Card(
-            modifier = Modifier.size(ShortcutCardWidth),
-            cornerRadius = 18.dp,
-            insideMargin = PaddingValues(0.dp),
-        ) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center,
-            ) {
-                ShortcutIcon(flight.item, flight.customIconUri, flight.colorIcon)
-            }
-        }
     }
 }
 
@@ -960,13 +820,6 @@ private const val MIN_VISIBLE_PIXELS = 16
 private val ShortcutCardWidth = 64.dp
 private val ShortcutGridMinGap = 12.dp
 private val ThirdPartyIconSize = 32.dp
-
-/** 等待目标卡片完成布局的最长时间；超时则视为目标在屏幕外。 */
-private const val TARGET_WAIT_MILLIS = 200L
-
-private const val FLY_DURATION_MILLIS = 420
-private val FLY_ARC_HEIGHT = 48.dp
-private const val FLY_SCALE_PEAK = 0.12f
 
 private const val KEY_SHORTCUTS_ENABLED = PrefKeys.SHORTCUTS_ENABLED
 private const val KEY_SHORTCUTS_ADDED = PrefKeys.SHORTCUTS_ADDED

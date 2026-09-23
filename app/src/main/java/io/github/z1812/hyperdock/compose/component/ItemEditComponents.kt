@@ -26,12 +26,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect as WindowRect
 import androidx.compose.ui.graphics.Color
@@ -44,15 +47,25 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import io.github.z1812.hyperdock.R
+import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
@@ -323,6 +336,135 @@ internal fun rememberCustomIconBitmap(uri: String?): Bitmap? {
     }
     return state.value
 }
+
+// ── 卡片飞行动画（排序交换/添加/删除） ─────────────────────────────────────
+
+/** 一次飞行动画批次：每张卡片记录条目 id、源位置（window 坐标）与飞行方向。 */
+internal class ItemFlight(
+    val id: String,
+    val from: WindowRect,
+    val adding: Boolean,
+    val content: @Composable () -> Unit,
+)
+
+@Composable
+internal fun ItemFlyOverlay(
+    flights: List<ItemFlight>?,
+    cardBounds: Map<String, WindowRect>,
+    cardWidth: Dp,
+    onFinished: () -> Unit,
+) {
+    var overlayPosition by remember { mutableStateOf(Offset.Zero) }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clipToBounds()
+            .onGloballyPositioned { coordinates ->
+                val topLeft = coordinates.boundsInWindow().topLeft
+                if (overlayPosition != topLeft) overlayPosition = topLeft
+            },
+    ) {
+        if (!flights.isNullOrEmpty()) {
+            key(flights) {
+                val progress = remember { Animatable(0f) }
+                var targets by remember { mutableStateOf<Map<String, WindowRect>?>(null) }
+
+                LaunchedEffect(flights) {
+                    // 交换时多张卡片同步飞行；等待所有新位置布局完成，超时则整批飞出屏幕。
+                    targets = withTimeoutOrNull(TARGET_WAIT_MILLIS) {
+                        coroutineScope {
+                            flights.map { flight ->
+                                async {
+                                    flight.id to snapshotFlow { cardBounds[flight.id] }
+                                        .first { it != null && it != flight.from }!!
+                                }
+                            }.awaitAll().toMap()
+                        }
+                    }
+                    progress.animateTo(1f, tween(FLY_DURATION_MILLIS, easing = FastOutSlowInEasing))
+                    onFinished()
+                }
+
+                flights.forEach { flight ->
+                    ItemFlightCard(
+                        flight = flight,
+                        target = targets?.get(flight.id),
+                        fraction = progress.value,
+                        overlayPosition = overlayPosition,
+                        cardWidth = cardWidth,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ItemFlightCard(
+    flight: ItemFlight,
+    target: WindowRect?,
+    fraction: Float,
+    overlayPosition: Offset,
+    cardWidth: Dp,
+) {
+    val view = LocalView.current
+    val density = LocalDensity.current
+    val fromCenter = flight.from.center
+    val toCenter = target?.center ?: Offset(
+        x = fromCenter.x,
+        y = if (flight.adding) -view.height.toFloat() else view.height * 2f,
+    )
+    val cardHalf = with(density) { cardWidth.toPx() / 2f }
+    val arcHeight = with(density) { FLY_ARC_HEIGHT.toPx() }
+    val dx = toCenter.x - fromCenter.x
+    val dy = toCenter.y - fromCenter.y
+    // 弧线朝运动主轴的垂直方向：横向交换时两张卡分别向上/向下绕行，纵向飞行时顺势加大弧度。
+    val arcDirection = if (abs(dy) >= abs(dx)) {
+        if (dy >= 0f) 1f else -1f
+    } else {
+        if (dx < 0f) 1f else -1f
+    }
+    val arc = sin(PI * fraction).toFloat() * arcHeight * arcDirection
+    val center = Offset(
+        x = fromCenter.x + dx * fraction,
+        y = fromCenter.y + dy * fraction + arc,
+    )
+    val scale = 1f + FLY_SCALE_PEAK * sin(PI * fraction).toFloat()
+
+    Box(
+        modifier = Modifier
+            .offset {
+                IntOffset(
+                    x = (center.x - overlayPosition.x - cardHalf).roundToInt(),
+                    y = (center.y - overlayPosition.y - cardHalf).roundToInt(),
+                )
+            }
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            },
+    ) {
+        Card(
+            modifier = Modifier.size(cardWidth),
+            cornerRadius = 18.dp,
+            insideMargin = PaddingValues(0.dp),
+        ) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                flight.content()
+            }
+        }
+    }
+}
+
+/** 等待目标卡片完成布局的最长时间；超时则视为目标在屏幕外。 */
+private const val TARGET_WAIT_MILLIS = 200L
+
+private const val FLY_DURATION_MILLIS = 420
+private val FLY_ARC_HEIGHT = 48.dp
+private const val FLY_SCALE_PEAK = 0.12f
 
 private const val POPUP_ENTER_MILLIS = 160
 private const val POPUP_SCRIM_ALPHA = 0.16f
