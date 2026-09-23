@@ -56,6 +56,11 @@
     <string name="shortcuts_summary">在全部应用面板与侧边栏展示自定义快捷方式</string>
     <string name="shortcut_auto_close">自动关闭侧边栏</string>
     <string name="shortcut_auto_close_summary">点击快捷方式后自动收起侧边栏</string>
+    <string name="edit">编辑</string>
+    <string name="item_name">名称</string>
+    <string name="color_icon">彩色图标</string>
+    <string name="choose_icon">选择图标</string>
+    <string name="restore_default_icon">恢复默认图标</string>
     <string name="quick_functions">快速启动</string>
     <string name="quick_functions_summary">从侧边栏快速启动选定的应用 Activity</string>
     <string name="quick_functions_added">已添加</string>

@@ -85,6 +85,7 @@ class HyperDockApp : Application(), XposedServiceHelper.OnServiceListener {
                     check(writeValue(editor, key, sourcePrefs.all[key])) {
                         "unsupported preference value for $key"
                     }
+                    editor.putLong(REMOTE_SYNC_SEQ, System.nanoTime())
                     check(editor.commit()) { "remote commit failed for $key" }
                     Log.d(TAG, "synced key=$key to remote prefs")
                 }
@@ -183,7 +184,7 @@ class HyperDockApp : Application(), XposedServiceHelper.OnServiceListener {
         val remote = service.getRemotePreferences(prefsName)
         val current = remote.all
         val target = entries.associate { it.key to it.value }
-        val removedKeys = current.keys - target.keys
+        val removedKeys = current.keys - target.keys - REMOTE_SYNC_SEQ
         val changedEntries = target.filter { (key, value) -> current[key] != value }
         if (removedKeys.isEmpty() && changedEntries.isEmpty()) return false
 
@@ -192,6 +193,7 @@ class HyperDockApp : Application(), XposedServiceHelper.OnServiceListener {
         for ((key, value) in changedEntries) {
             check(writeValue(editor, key, value)) { "unsupported preference value for $key" }
         }
+        editor.putLong(REMOTE_SYNC_SEQ, System.nanoTime())
         check(editor.commit()) { "remote commit failed for $prefsName" }
         Log.d(
             TAG,
@@ -289,6 +291,12 @@ class HyperDockApp : Application(), XposedServiceHelper.OnServiceListener {
         private const val META_FORMAT_VERSION = "sync_format_version"
         private const val META_CONFIG_DIGEST = "config_digest"
         private const val SYNC_FORMAT_VERSION = 1
+
+        /**
+         * 同组哨兵键：每次远程写入都单调变化。框架端 RemotePreferences 对
+         * “值清空/键移除”类变更不派发通知，靠此键保证宿主每次都能收到刷新信号。
+         */
+        private const val REMOTE_SYNC_SEQ = "__hyperdock_sync_seq"
 
         private object ServiceState {
             @Volatile private var serviceReady = false

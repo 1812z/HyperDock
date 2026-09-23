@@ -6,6 +6,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.res.ColorStateList
+import android.graphics.PorterDuff
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.Color
@@ -84,6 +86,10 @@ internal object SidebarShortcutController {
     // ── 反射缓存 ──────────────────────────────────────────────────────────────
     private var adapterMethod: Method? = null
     private var stateFlowSetMethods: List<Method> = emptyList()
+    @Volatile private var stateFlowMethod: Method? = null
+    @Volatile private var stateFlowInstance: Any? = null
+    @Volatile private var adapterInstance: Any? = null
+    @Volatile private var configListenerRegistered = false
     private var titleBindMethod: Method? = null
     private var shortcutBindMethod: Method? = null
     private var genericBindMethod: Method? = null
@@ -142,6 +148,7 @@ internal object SidebarShortcutController {
             return
         }
         installStateReceiver()
+        installConfigChangeListener()
         if (preparePermanentlyFailed) return
         if (!prepare(module, param.defaultClassLoader)) {
             schedulePrepareRetry(module, param)
@@ -156,6 +163,8 @@ internal object SidebarShortcutController {
             stateFlowSetMethods.forEach { m ->
                 try {
                     module.hook(m).intercept { chain ->
+                        if (stateFlowInstance !== chain.thisObject) stateFlowInstance = chain.thisObject
+                        if (stateFlowMethod !== m) stateFlowMethod = m
                         val value = chain.args.getOrNull(0)
                         if (value is List<*>) {
                             @Suppress("UNCHECKED_CAST")
@@ -196,6 +205,7 @@ internal object SidebarShortcutController {
             log(module, if (stateFlowSetMethods.isEmpty()) "injection mode=ADAPTER_FALLBACK" else "adapter submit fallback enabled")
             try {
                 module.hook(m).intercept { chain ->
+                    if (adapterInstance !== chain.thisObject) adapterInstance = chain.thisObject
                     val original = chain.args.getOrNull(0) as? List<Any>
                         ?: return@intercept chain.proceed()
                     if (isLikelyAllAppsList(original)) {
@@ -986,14 +996,27 @@ internal object SidebarShortcutController {
     }
 
     private fun resolveShortcut(id: String): ShortcutTarget? {
+        val customLabel = ConfigManager.getStringSet(PrefKeys.SHORTCUTS_CUSTOM_LABELS, emptySet())
+            .firstOrNull { it.startsWith("$id=") }
+            ?.substringAfter('=')
+            ?.takeIf { it.isNotBlank() }
+        // 自定义图标绝不写入 QuickInfo 的 icon 字段：原生绑定器 w0.e() 会用
+        // 宿主 UIL 异步加载该 URI 并在完成后替换展示 drawable，任何着色都会
+        // 被覆盖（V1 的 content:// 与默认图标的 android.resource:// 均如此）。
+        // 非 activity 条目 icon 保持为空——空 URI 在绑定器内部同步走
+        // “取消任务+清空”路径，不会产生异步覆盖；图标完全由 bindInjectedIcon
+        // 从模块配置同步绑定。activity:（快速启动）条目例外：其自定义图标
+        // 历史上就经 QuickInfo 传递且无磁贴着色，维持原状。
         SYSTEM_LABELS[id]?.let { (zh, en) ->
             // HyperIsland 条目与其他系统磁贴保持完全相同的 QuickInfo 形态
             // （NATIVE + 空组件）：点击由注入的监听器消费，绝不依赖原生分发，
             // 否则不同 MIUI 构建会因 type 差异走未 hook 的路径导致点击无响应。
-            val icon = if (id.startsWith("hyperisland_")) {
-                "android.resource://io.github.z1812.hyperdock/drawable/ic_focus_ticker_screen_recorder"
-            } else null
-            return ShortcutTarget("", "", if (SidebarSectionConfig.isChinese()) zh else en, icon)
+            return ShortcutTarget(
+                "",
+                "",
+                customLabel ?: if (SidebarSectionConfig.isChinese()) zh else en,
+                null,
+            )
         }
         if (id.startsWith("activity:")) {
             val spec = parseActivityShortcut(id) ?: return null
@@ -1017,17 +1040,14 @@ internal object SidebarShortcutController {
             )
         }
         return if ('/' in id) {
+            // 第三方磁贴：icon 留空（见上方注释），默认图标走 loadInjectedDrawable。
             val pkg = id.substringBeforeLast('/')
             val component = ComponentName.unflattenFromString(normalizeComponentId(id)) ?: return null
-            val context = appContext() ?: return null
-            val serviceInfo = runCatching {
-                context.packageManager.getServiceInfo(component, 0)
-            }.getOrNull()
             ShortcutTarget(
                 pkg,
                 "",
-                thirdPartyLabel(id),
-                serviceInfo?.let { rawIconUri(context, it) },
+                customLabel ?: thirdPartyLabel(id),
+                null,
             )
         } else {
             null
@@ -1057,16 +1077,6 @@ internal object SidebarShortcutController {
         parseActivityShortcut(id)?.componentId ?: id.removePrefix("activity:")
 
     /** QuickInfo.icon 使用 Android 标准资源 URI，避免依赖 MIUI 私有 res:/ 方言。 */
-    private fun rawIconUri(
-        context: android.content.Context,
-        info: android.content.pm.ServiceInfo,
-    ): String? {
-        if (info.icon == 0) return null
-        return runCatching {
-            "android.resource://${info.packageName}/${info.icon}"
-        }.getOrNull()
-    }
-
     private fun rawApplicationIconUri(
         context: android.content.Context,
         info: android.content.pm.ApplicationInfo,
@@ -1141,21 +1151,25 @@ internal object SidebarShortcutController {
             ?: return
         val quickInfo = quickInfoFromModel(model) ?: return
         val componentId = quickInfoId(quickInfo).removePrefix(ID_PREFIX)
-        val iconUri = quickInfoValue(quickInfo, 1)
+        val customUri = if (componentId.startsWith("activity:")) null else customIconUri(componentId)
         val drawable = if (componentId.startsWith("activity:")) {
-            loadIconUri(imageView.context, iconUri)
+            loadIconUri(imageView.context, quickInfoValue(quickInfo, 1))
                 ?: loadActivityDrawable(imageView.context, activityComponentId(componentId))
         } else {
-            loadInjectedDrawable(imageView.context, componentId)
+            // 非 activity 注入条目的 QuickInfo.icon 恒为空，宿主异步加载无从
+            // 触发；自定义图标与默认图标都在这里同步解码并烘焙着色。
+            loadIconUri(imageView.context, customUri)
+                ?: loadInjectedDrawable(imageView.context, componentId)
         }
             ?: loadSystemDrawable(imageView.context, componentId)
             ?: imageView.context.getDrawable(android.R.drawable.ic_menu_info_details)
         val enabled = tileState[componentId] == true
+        val colorIcon = colorIconEnabled(componentId)
         tileViews[componentId] = imageView
         if (componentId.startsWith("activity:")) {
             styleQuickLaunchIcon(imageView, drawable)
         } else {
-            styleTileIcon(imageView, drawable, enabled)
+            styleTileIcon(imageView, drawable, enabled, colorIcon)
         }
         if (!componentId.startsWith("activity:") && queriedStates.add(componentId)) {
             requestTileState(imageView.context, componentId)
@@ -1252,8 +1266,8 @@ internal object SidebarShortcutController {
     }
 
     /** Decode the icon URI written into QuickInfo before falling back to package resources. */
-    private fun loadIconUri(context: android.content.Context, uri: String): Drawable? {
-        if (uri.isBlank()) return null
+    private fun loadIconUri(context: android.content.Context, uri: String?): Drawable? {
+        if (uri.isNullOrBlank()) return null
         return runCatching {
             when {
                 uri.startsWith("android.resource://") -> {
@@ -1299,7 +1313,7 @@ internal object SidebarShortcutController {
         return resId.takeIf { it != 0 }?.let { runCatching { context.getDrawable(it) }.getOrNull() }
     }
 
-    private fun styleTileIcon(imageView: ImageView, source: Drawable?, enabled: Boolean) {
+    private fun styleTileIcon(imageView: ImageView, source: Drawable?, enabled: Boolean, colorIcon: Boolean = false) {
         val density = imageView.resources.displayMetrics.density
         if (!originalIconBounds.containsKey(imageView)) {
             val lp = imageView.layoutParams
@@ -1317,13 +1331,39 @@ internal object SidebarShortcutController {
         imageView.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = 12f * density
-            setColor(Color.parseColor(if (enabled) "#CCE7E7E9" else "#CC4A4A50"))
+            // 彩色图标开启时，激活态改用强调色背景，图标本身保持原色。
+            setColor(
+                when {
+                    colorIcon && enabled -> Color.parseColor("#3982FA")
+                    enabled -> Color.parseColor("#CCE7E7E9")
+                    else -> Color.parseColor("#CC4A4A50")
+                },
+            )
         }
-        source?.mutate()?.apply {
-            setTint(Color.parseColor(if (enabled) "#3982FA" else "#F5F5F7"))
-            alpha = if (enabled) 255 else 204
+        val tintColor = Color.parseColor(if (enabled) "#3982FA" else "#F5F5F7")
+        val iconAlpha = if (enabled) 255 else 204
+        if (colorIcon) {
+            imageView.imageTintList = null
+            imageView.imageTintMode = null
+            imageView.clearColorFilter()
+            imageView.imageAlpha = 255
+        } else {
+            imageView.imageTintList = ColorStateList.valueOf(tintColor)
+            imageView.imageTintMode = PorterDuff.Mode.SRC_IN
         }
-        imageView.setImageDrawable(source?.let { cropQuickLaunchDrawable(imageView, it) })
+        // tint 必须烘焙到 crop 之后的最终实例：crop 可能返回新 drawable，
+        // 源实例上的 setTint 不会带过去；烘焙后即使视图级着色被原生清掉，
+        // 展示实例也保持单色。
+        val display = source?.let { cropQuickLaunchDrawable(imageView, it) }?.mutate()?.apply {
+            if (colorIcon) {
+                clearColorFilter()
+                setAlpha(255)
+            } else {
+                setTint(tintColor)
+                setAlpha(iconAlpha)
+            }
+        }
+        imageView.setImageDrawable(display)
     }
 
     /** Remove large opaque white margins commonly present in adaptive app icons. */
@@ -1390,6 +1430,8 @@ internal object SidebarShortcutController {
         imageView.background = null
         imageView.imageTintList = null
         imageView.imageTintMode = null
+        imageView.clearColorFilter()
+        imageView.imageAlpha = 255
         source?.mutate()?.apply {
             clearColorFilter()
             alpha = 255
@@ -1399,9 +1441,17 @@ internal object SidebarShortcutController {
 
     private fun resetNativeIcon(holder: Any) {
         val imageView = findImageView(holder) ?: return
+        // 视图已复用给原生条目：移除 tileViews 注册，防止状态广播按陈旧
+        // componentId 找到该视图并重新套用注入磁贴的样式。
+        tileViews.entries.removeAll { it.value === imageView }
         imageView.background = null
         imageView.setPadding(0, 0, 0, 0)
         imageView.translationX = 0f
+        // 清理视图级着色，避免注入磁贴的样式串到复用的原生条目。
+        imageView.imageTintList = null
+        imageView.imageTintMode = null
+        imageView.clearColorFilter()
+        imageView.imageAlpha = 255
         originalIconBounds[imageView]?.let { bounds ->
             imageView.layoutParams = imageView.layoutParams?.apply {
                 width = bounds[0]
@@ -1412,23 +1462,68 @@ internal object SidebarShortcutController {
 
     private fun normalizeComponentId(id: String): String = id.replace("\\", "")
 
+    /** 读取条目的自定义图标 URI；未设置或已恢复默认时返回 null。 */
+    private fun customIconUri(id: String): String? =
+        ConfigManager.getStringSet(PrefKeys.SHORTCUTS_CUSTOM_ICON_URIS, emptySet())
+            .firstOrNull { it.startsWith("$id=") }
+            ?.substringAfter('=')
+            ?.takeIf { it.isNotBlank() }
+
+    /** 彩色图标开关：开启后图标保持原色，磁贴激活态以强调色背景提示。 */
+    private fun colorIconEnabled(id: String): Boolean {
+        val set = ConfigManager.getStringSet(PrefKeys.SHORTCUTS_COLOR_ICONS, emptySet())
+        return id in set || normalizeComponentId(id) in set
+    }
+
+    /**
+     * 配置变化（快捷方式增删/排序/自定义名称/图标/恢复默认）后，重新发射缓存的
+     * 原生列表，让已 hook 的 StateFlow setter / adapter 提交路径重新执行 [inject]，
+     * 面板无需重启作用域即可实时刷新。
+     */
+    private fun refreshInjectedShortcuts() {
+        val native = cachedNativeModels
+        if (native == null || native.isEmpty()) return
+        if (!isLikelyAllAppsList(native)) return
+        val method = stateFlowMethod
+        val instance = stateFlowInstance
+        if (method != null && instance != null) {
+            if (runCatching { method.invoke(instance, native) }.isSuccess) return
+        }
+        val adapter = adapterMethod
+        val adapterTarget = adapterInstance
+        if (adapter != null && adapterTarget != null) {
+            runCatching { adapter.invoke(adapterTarget, native) }
+        }
+    }
+
+    private fun installConfigChangeListener() {
+        if (configListenerRegistered) return
+        ConfigManager.addChangeListener {
+            refreshInjectedShortcuts()
+        }
+        configListenerRegistered = true
+    }
+
     private fun installStateReceiver() {
         if (stateReceiverInstalled) return
         val context = appContext() ?: return
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 if (intent.action != SidebarQsBridgeHook.ACTION_STATE) return
-                val id = intent.getStringExtra(SidebarQsBridgeHook.EXTRA_COMPONENT)
+                val rawId = intent.getStringExtra(SidebarQsBridgeHook.EXTRA_COMPONENT)
                     ?: intent.getStringExtra(SidebarQsBridgeHook.EXTRA_SPEC)
                     ?: return
+                val id = if (tileViews.containsKey(rawId)) rawId
+                    else specToCatalogId[rawId] ?: rawId
                 val enabled = intent.getBooleanExtra(SidebarQsBridgeHook.EXTRA_ENABLED, false)
                 val toggleable = intent.getBooleanExtra(SidebarQsBridgeHook.EXTRA_TOGGLEABLE, false)
                 tileState[id] = enabled
                 if (toggleable) toggleableTiles.add(id) else toggleableTiles.remove(id)
                 tileViews[id]?.let { view ->
-                    val drawable = loadInjectedDrawable(view.context, id)
+                    val drawable = loadIconUri(view.context, customIconUri(id))
+                        ?: loadInjectedDrawable(view.context, id)
                         ?: loadSystemDrawable(view.context, id)
-                    styleTileIcon(view, drawable, enabled)
+                    styleTileIcon(view, drawable, enabled, colorIconEnabled(id))
                 }
             }
         }
@@ -1496,9 +1591,10 @@ internal object SidebarShortcutController {
             val enabled = !(tileState[id] ?: false)
             tileState[id] = enabled
             tileViews[id]?.let { view ->
-                val drawable = loadInjectedDrawable(view.context, id)
+                val drawable = loadIconUri(view.context, customIconUri(id))
+                    ?: loadInjectedDrawable(view.context, id)
                     ?: loadSystemDrawable(view.context, id)
-                styleTileIcon(view, drawable, enabled)
+                styleTileIcon(view, drawable, enabled, colorIconEnabled(id))
             }
         }
         if (id.startsWith("activity:")) {
@@ -1534,22 +1630,28 @@ internal object SidebarShortcutController {
         )
     }
 
-    private fun systemTileSpec(id: String): String? = when (id) {
-        "wifi" -> "wifi"
-        "bluetooth" -> "bt"
-        "flashlight" -> "flashlight"
-        "airplane_mode" -> "airplane"
-        "mobile_data" -> "cell"
-        "location" -> "location"
-        "auto_rotate" -> "rotation"
-        "dnd" -> "dnd"
-        "dark_mode" -> "dark"
-        "hotspot" -> "hotspot"
-        "cast" -> "cast"
-        "mute" -> "sound"
-        "screenshot" -> "screenshot"
-        else -> null
-    }
+    private val catalogIdToSpec: Map<String, String> = mapOf(
+        "wifi" to "wifi",
+        "bluetooth" to "bt",
+        "flashlight" to "flashlight",
+        "airplane_mode" to "airplane",
+        "mobile_data" to "cell",
+        "location" to "location",
+        "auto_rotate" to "rotation",
+        "dnd" to "dnd",
+        "dark_mode" to "dark",
+        "hotspot" to "hotspot",
+        "cast" to "cast",
+        "mute" to "sound",
+        "screenshot" to "screenshot",
+    )
+
+    // SystemUI 回传的是 tile spec（bt/cell），与目录 id（bluetooth/mobile_data）
+    // 不同名，状态广播需要反查回目录 id 才能命中 tileViews/tileState。
+    private val specToCatalogId: Map<String, String> =
+        catalogIdToSpec.entries.associate { (catalog, spec) -> spec to catalog }
+
+    private fun systemTileSpec(id: String): String? = catalogIdToSpec[id]
 
     private fun thirdPartyLabel(componentId: String): String {
         tileLabelCache[componentId]?.let { return it }

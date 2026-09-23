@@ -34,6 +34,9 @@ object PrefKeys {
     const val SHORTCUTS_ADDED = "shortcuts_added"
     const val SHORTCUTS_ORDER = "shortcuts_order"
     const val SHORTCUTS_AUTO_CLOSE = "shortcuts_auto_close"
+    const val SHORTCUTS_CUSTOM_LABELS = "shortcuts_custom_labels"
+    const val SHORTCUTS_CUSTOM_ICON_URIS = "shortcuts_custom_icon_uris"
+    const val SHORTCUTS_COLOR_ICONS = "shortcuts_color_icons"
 
     // 自定义快捷功能（显式 Activity）
     const val QUICK_FUNCTIONS_ENABLED = "quick_functions_enabled"
@@ -75,6 +78,9 @@ object PrefKeys {
         SHORTCUTS_ADDED,
         SHORTCUTS_ORDER,
         SHORTCUTS_AUTO_CLOSE,
+        SHORTCUTS_CUSTOM_LABELS,
+        SHORTCUTS_CUSTOM_ICON_URIS,
+        SHORTCUTS_COLOR_ICONS,
         QUICK_FUNCTIONS_ENABLED,
         QUICK_FUNCTIONS_ADDED,
         QUICK_FUNCTIONS_ICON_URIS,

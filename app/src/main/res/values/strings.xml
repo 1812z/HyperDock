@@ -59,6 +59,11 @@
     <string name="shortcuts_summary">Show custom shortcuts in the all-apps panel and dock</string>
     <string name="shortcut_auto_close">Auto-close sidebar</string>
     <string name="shortcut_auto_close_summary">Collapse the sidebar automatically after tapping a shortcut</string>
+    <string name="edit">Edit</string>
+    <string name="item_name">Name</string>
+    <string name="color_icon">Color icon</string>
+    <string name="choose_icon">Choose icon</string>
+    <string name="restore_default_icon">Restore default icon</string>
     <string name="quick_functions">Quick launch</string>
     <string name="quick_functions_summary">Quickly launch selected application activities from the sidebar</string>
     <string name="quick_functions_added">Added</string>

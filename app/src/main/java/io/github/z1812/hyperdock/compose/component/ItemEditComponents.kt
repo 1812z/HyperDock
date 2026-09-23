@@ -1,0 +1,328 @@
+package io.github.z1812.hyperdock.compose.component
+
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect as WindowRect
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import io.github.z1812.hyperdock.R
+import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.HorizontalDivider
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.window.WindowDialog
+
+/** 点按菜单中的一个操作项。 */
+internal data class ItemPopupAction(
+    val icon: ImageVector,
+    val contentDescription: String? = null,
+    val tint: Color = Color.Unspecified,
+    val enabled: Boolean = true,
+    val onClick: () -> Unit,
+)
+
+/**
+ * 通用卡片点按菜单：名称 + 分割线 + 一行操作图标。
+ * 快捷方式页与快速启动页共用，操作项由调用方决定。
+ */
+@Composable
+internal fun ItemActionPopup(
+    title: String,
+    anchor: WindowRect,
+    actions: List<ItemPopupAction>,
+    onDismiss: () -> Unit,
+) {
+    val density = LocalDensity.current
+    var overlaySize by remember { mutableStateOf(IntSize.Zero) }
+    var overlayPosition by remember { mutableStateOf(Offset.Zero) }
+    var cardSize by remember { mutableStateOf(IntSize.Zero) }
+    val appear = remember { Animatable(0f) }
+
+    LaunchedEffect(actions) {
+        appear.animateTo(1f, tween(POPUP_ENTER_MILLIS, easing = FastOutSlowInEasing))
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { coordinates ->
+                overlaySize = coordinates.size
+                val topLeft = coordinates.boundsInWindow().topLeft
+                if (overlayPosition != topLeft) overlayPosition = topLeft
+            }
+            .background(
+                MiuixTheme.colorScheme.windowDimming.copy(alpha = POPUP_SCRIM_ALPHA * appear.value),
+            )
+            .clickable(interactionSource = null, indication = null) { onDismiss() },
+    ) {
+        val margin = with(density) { 12.dp.roundToPx() }
+        val fallbackWidth = with(density) { 180.dp.roundToPx() }
+        val fallbackHeight = with(density) { 128.dp.roundToPx() }
+        val popupWidth = if (cardSize.width > 0) cardSize.width else fallbackWidth
+        val popupHeight = if (cardSize.height > 0) cardSize.height else fallbackHeight
+        val anchorCenterX = (anchor.center.x - overlayPosition.x).roundToInt()
+        val anchorBottomY = (anchor.bottom - overlayPosition.y).roundToInt()
+        val anchorTopY = (anchor.top - overlayPosition.y).roundToInt()
+        val left = (anchorCenterX - popupWidth / 2)
+            .coerceIn(margin, (overlaySize.width - popupWidth - margin).coerceAtLeast(margin))
+        val top = if (anchorBottomY + margin + popupHeight <= overlaySize.height) {
+            anchorBottomY + margin
+        } else {
+            (anchorTopY - margin - popupHeight).coerceAtLeast(margin)
+        }
+
+        Box(
+            modifier = Modifier
+                .offset { IntOffset(left, top) }
+                .onGloballyPositioned { cardSize = it.size }
+                .graphicsLayer {
+                    val s = 0.92f + 0.08f * appear.value
+                    scaleX = s
+                    scaleY = s
+                    alpha = appear.value
+                }
+                .clickable(interactionSource = null, indication = null) {
+                    // 消费空白处点击，避免直接关闭。
+                },
+        ) {
+            Card(
+                modifier = Modifier.width(180.dp),
+                cornerRadius = 22.dp,
+                insideMargin = PaddingValues(0.dp),
+            ) {
+                Column {
+                    Text(
+                        text = title,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        fontSize = MiuixTheme.textStyles.body2.fontSize,
+                        color = MiuixTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 12.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        actions.forEach { action ->
+                            IconButton(onClick = action.onClick, enabled = action.enabled) {
+                                PopupActionIcon(action)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PopupActionIcon(action: ItemPopupAction) {
+    if (action.tint == Color.Unspecified) {
+        Icon(
+            imageVector = action.icon,
+            contentDescription = action.contentDescription,
+            modifier = Modifier.size(24.dp),
+        )
+    } else {
+        Icon(
+            imageVector = action.icon,
+            contentDescription = action.contentDescription,
+            modifier = Modifier.size(24.dp),
+            tint = action.tint,
+        )
+    }
+}
+
+/**
+ * 通用条目编辑对话框：标题即名称，居中图标预览 + 名称输入 + 彩色图标开关 +
+ * 选择/恢复默认图标 + 取消/保存。
+ */
+@Composable
+internal fun ItemEditDialog(
+    show: Boolean,
+    defaultIcon: @Composable () -> Unit,
+    initialName: String,
+    initialIconUri: String?,
+    initialColorIcon: Boolean,
+    nameLabel: String,
+    onDismiss: () -> Unit,
+    onSave: (name: String, iconUri: String?, colorIcon: Boolean) -> Unit,
+) {
+    var name by remember(show, initialName) { mutableStateOf(initialName) }
+    var iconUri by remember(show, initialIconUri) { mutableStateOf(initialIconUri) }
+    var colorIcon by remember(show, initialColorIcon) { mutableStateOf(initialColorIcon) }
+    val context = LocalContext.current
+    val iconPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+            context.grantUriPermission(
+                "com.miui.securitycenter",
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        }
+        iconUri = uri.toString()
+    }
+
+    WindowDialog(
+        show = show,
+        title = name.ifBlank { initialName },
+        onDismissRequest = onDismiss,
+    ) {
+        Column(
+            modifier = Modifier.padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                val custom = rememberCustomIconBitmap(iconUri)
+                if (custom != null) {
+                    Image(
+                        bitmap = custom.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.size(56.dp),
+                        contentScale = ContentScale.Crop,
+                        colorFilter = if (!colorIcon) {
+                            ColorFilter.tint(MiuixTheme.colorScheme.onSurfaceContainer)
+                        } else {
+                            null
+                        },
+                    )
+                } else {
+                    Box(modifier = Modifier.size(56.dp), contentAlignment = Alignment.Center) {
+                        defaultIcon()
+                    }
+                }
+            }
+            TextField(
+                value = name,
+                onValueChange = { name = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = nameLabel,
+                singleLine = true,
+            )
+            PreferenceSwitch(
+                title = stringResource(R.string.color_icon),
+                summary = null,
+                icon = null,
+                checked = colorIcon,
+            ) { colorIcon = it }
+            if (iconUri == null) {
+                Button(
+                    onClick = { iconPicker.launch(arrayOf("image/*")) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.choose_icon))
+                }
+            } else {
+                TextButton(
+                    text = stringResource(R.string.restore_default_icon),
+                    onClick = { iconUri = null },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                TextButton(
+                    text = stringResource(R.string.cancel),
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f),
+                )
+                Button(
+                    onClick = { onSave(name.trim(), iconUri, colorIcon) },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColorsPrimary(),
+                ) {
+                    Text(stringResource(R.string.save))
+                }
+            }
+        }
+    }
+}
+
+/** 解码自定义图标 URI；无 URI 或解码失败时返回 null。 */
+@Composable
+internal fun rememberCustomIconBitmap(uri: String?): Bitmap? {
+    val context = LocalContext.current
+    val state = produceState<Bitmap?>(initialValue = null, uri) {
+        value = withContext(Dispatchers.IO) {
+            if (uri.isNullOrBlank()) {
+                null
+            } else {
+                runCatching {
+                    context.contentResolver.openInputStream(Uri.parse(uri))?.use { input ->
+                        BitmapFactory.decodeStream(input)
+                    }
+                }.getOrNull()
+            }
+        }
+    }
+    return state.value
+}
+
+private const val POPUP_ENTER_MILLIS = 160
+private const val POPUP_SCRIM_ALPHA = 0.16f
