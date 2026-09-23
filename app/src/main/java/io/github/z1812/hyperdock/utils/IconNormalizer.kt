@@ -113,7 +113,9 @@ object IconNormalizer {
             destination,
             Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG),
         )
-        applyCornerRadius(outputCanvas, destination, side * cornerPercent)
+        // 半径按**实际绘制区域**算，而不是输出画布：传了 contentInset 时内容整体内缩，
+        // 半径若不跟着缩，圆角占边长的比例会被动变大、看着更圆。inset = 0 时两者等价。
+        applyCornerRadius(outputCanvas, destination, destination.width() * cornerPercent)
         canvas.recycle()
         return output
     }

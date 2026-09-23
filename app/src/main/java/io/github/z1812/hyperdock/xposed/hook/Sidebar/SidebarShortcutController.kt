@@ -89,6 +89,17 @@ internal object SidebarShortcutController {
      */
     private const val QUICK_LAUNCH_ICON_CORNER_PERCENT = 0.2f
 
+    /**
+     * 快速启动里应用图标的四周留白比例（占边长）。
+     *
+     * 归一化会把内容放大到铺满画布，再按宿主原生尺寸显示 —— 相当于顶满单元格，
+     * 视觉上比原生快捷功能大一整圈：原生应用图标用的是自适应图标，108dp 画布里
+     * 只画约 72dp（含遮罩安全区），本身就带一圈内边距。这里补回这层留白。
+     *
+     * 0 = 顶满，0.4 = 内容只剩 60%。太大圆角会显得孤立，超过 0.15 就没有原生味了。
+     */
+    private const val QUICK_LAUNCH_ICON_INSET_PERCENT = 0.08f
+
     /** 模块内置 drawable 的资源名，经 createPackageContext 跨进程按名取用。 */
     private const val HYPER_ISLAND_ICON_RES = "ic_focus_ticker_screen_recorder"
 
@@ -1474,19 +1485,23 @@ internal object SidebarShortcutController {
      *
      * @param trimWhitePlate 是否剔除"白底 + 图形"里的白底。磁贴图标要：白底会把
      *        中间的图形衬得偏小；应用图标不要：那里的白底是设计的一部分。
+     * @param contentInset  内容四周留白比例，用来把图标从"顶满"收回来一点，
+     *        对齐原生快捷功能的视觉尺寸。
      */
     private fun normalizedIcon(
         context: Context,
         source: Drawable,
         trimWhitePlate: Boolean,
         cornerPercent: Float = 0f,
+        contentInset: Float = 0f,
     ): Drawable {
         val slot = normalizedIconCache.getOrPut(source) { HashMap(2) }
-        return slot.getOrPut("$trimWhitePlate/$cornerPercent") {
+        return slot.getOrPut("$trimWhitePlate/$cornerPercent/$contentInset") {
             IconNormalizer.normalizeDrawable(
                 context,
                 source,
                 ICON_CANVAS_SIZE,
+                contentInset = contentInset,
                 trimWhitePlate = trimWhitePlate,
                 cornerPercent = cornerPercent,
             )
@@ -1522,7 +1537,8 @@ internal object SidebarShortcutController {
         imageView.imageAlpha = 255
         // 同样先归一化：activity 图标常带大量透明边距（圆形图标尤其明显），
         // 不处理就比同排的小一圈。trimWhitePlate 传 false（应用图标的白底是
-        // 设计的一部分），cornerPercent 传正值（静态图标本身是满幅方图，需要切圆角）。
+        // 设计的一部分），cornerPercent 传正值（静态图标本身是满幅方图，需要切圆角），
+        // contentInset 补回原生自适应图标那圈内边距（归一化是把内容顶满的）。
         val display = source
             ?.let {
                 normalizedIcon(
@@ -1530,6 +1546,7 @@ internal object SidebarShortcutController {
                     it,
                     trimWhitePlate = false,
                     cornerPercent = QUICK_LAUNCH_ICON_CORNER_PERCENT,
+                    contentInset = QUICK_LAUNCH_ICON_INSET_PERCENT,
                 )
             }
             ?.mutate()?.apply {
