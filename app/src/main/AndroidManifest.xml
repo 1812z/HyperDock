@@ -34,5 +34,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity-alias>
+        <!-- SystemUI 侧探测到的“本机可用系统磁贴目录”会定向广播到这里。
+             exported 必须为 true：发送方是 com.android.systemui（不同 uid）。
+             接收到的内容再落库给 Compose 的选择器页面用。 -->
+        <receiver
+            android:name=".systemtile.SystemTileCatalogReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="io.github.z1812.hyperdock.action.SYSTEM_TILE_CATALOG" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

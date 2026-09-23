@@ -2,6 +2,7 @@ package io.github.z1812.hyperdock.compose.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import io.github.z1812.hyperdock.PrefKeys
 
 /**
  * 应用配置读写。
@@ -46,13 +47,19 @@ class PrefsRepository(context: Context) {
     }
 
     fun getStringSet(key: String): Set<String> =
-        runCatching { prefs.getStringSet(key, emptySet())?.toSet() ?: emptySet() }
+        runCatching {
+            prefs.getStringSet(key, emptySet())
+                ?.filterNot { it == PrefKeys.EMPTY_SET_MARKER }
+                ?.toSet()
+                ?: emptySet()
+        }
             .getOrDefault(emptySet())
 
     fun contains(key: String): Boolean = prefs.contains(key)
 
     fun putStringSet(key: String, value: Set<String>) {
-        prefs.edit().putStringSet(key, value).apply()
+        val stored = if (value.isEmpty()) setOf(PrefKeys.EMPTY_SET_MARKER) else value
+        prefs.edit().putStringSet(key, stored).apply()
     }
 
     fun getDouble(key: String, default: Double): Double =

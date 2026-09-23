@@ -11,9 +11,6 @@ import android.graphics.PorterDuff
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.Color
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.drawable.BitmapDrawable
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -22,6 +19,9 @@ import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.TextView
 import io.github.z1812.hyperdock.PrefKeys
+import io.github.z1812.hyperdock.systemtile.SystemTileCatalogProtocol
+import io.github.z1812.hyperdock.systemtile.SystemTileSpecs
+import io.github.z1812.hyperdock.utils.IconNormalizer
 import io.github.z1812.hyperdock.xposed.ConfigManager
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
@@ -70,8 +70,27 @@ internal object SidebarShortcutController {
     /** 注入快捷方式的 QuickInfo id 前缀，避免与原生快捷方式 id 冲突。 */
     private const val ID_PREFIX = "hyperdock::"
 
-    /** 系统开关的展示顺序，需与 Compose 端 ShortcutCatalog.SYSTEM_ENTRIES 保持一致。 */
-    private val SYSTEM_LABELS get() = SidebarShortcutCatalog.systemLabels
+    /**
+     * 图标归一化后的画布边长（px）。
+     *
+     * 远大于控件实际尺寸（46dp 去掉 8dp padding 后约 30dp）—— 留足余量让
+     * `ScaleType.FIT_CENTER` 往下缩，而不是往上放。详见 [IconNormalizer]。
+     */
+    private const val ICON_CANVAS_SIZE = 256
+
+    /** 系统磁贴 drawable 的查找顺序：先 SystemUI 自带磁贴图标，再框架通用图标。 */
+    private val DRAWABLE_PACKAGES = arrayOf("com.android.systemui", "android")
+
+    /**
+     * 系统磁贴文案表，同时充当"哪些系统磁贴可以注入"的判定依据。
+     *
+     * 目录就绪时用 [SystemTileCatalogStore] 的合并结果：它只保留**本机确实支持**的
+     * 磁贴（SystemUI 侧用 `createTile` + `isAvailable()` 逐个筛过），所以本机没有的
+     * 功能既不会出现在选择器里，也不会在侧边栏留下点了没反应的僵尸条目。
+     * 目录未就绪时回退内置表，行为与引入目录前完全一致。
+     */
+    private val SYSTEM_LABELS
+        get() = SystemTileCatalogStore.labelsOrNull() ?: SidebarShortcutCatalog.systemLabels
 
     private val tileLabelCache = HashMap<String, String>()
     private val tileState = HashMap<String, Boolean>()
@@ -79,6 +98,16 @@ internal object SidebarShortcutController {
     private val tileViews = HashMap<String, ImageView>()
     private val queriedStates = HashSet<String>()
     private val originalIconBounds = java.util.WeakHashMap<ImageView, IntArray>()
+
+    /**
+     * 归一化结果缓存。
+     *
+     * [IconNormalizer] 每次都要把 drawable 铺到 512×512 再逐像素量边界，而侧边栏
+     * 跑在 SystemUI 进程里、条目还会被反复绑定。同一 drawable 实例（由
+     * [SystemTileCatalogStore] 的 iconCache 保证复用）只算一次即可。key 用弱引用，
+     * source 被回收时缓存自动失效。
+     */
+    private val normalizedIconCache = java.util.WeakHashMap<Drawable, Drawable>()
     @Volatile private var stateReceiverInstalled = false
     /** 记录本 Hook 创建的标题对象，避免使用无效 textRes 作为识别标记。 */
     private val injectedTitles = Collections.newSetFromMap(WeakHashMap<Any, Boolean>())
@@ -148,6 +177,7 @@ internal object SidebarShortcutController {
             return
         }
         installStateReceiver()
+        bootstrapSystemCatalog()
         installConfigChangeListener()
         if (preparePermanentlyFailed) return
         if (!prepare(module, param.defaultClassLoader)) {
@@ -1293,24 +1323,41 @@ internal object SidebarShortcutController {
         }.getOrNull()
     }
 
+    /**
+     * 系统磁贴图标。
+     *
+     * 首选 [SystemTileCatalogStore]：图标由 SystemUI 从磁贴本体（`QSTile.State.icon`）
+     * 取出后随目录推来，是**真的那个图标**，不需要猜名字。
+     *
+     * 后面的名字表只作最后的兜底，实际几乎不会命中，原因有两层：
+     *   1. 名字本身就是猜的；
+     *   2. 更根本的是 `context.resources` 是安全中心自己的 Resources，它的
+     *      AssetManager **没有加载 SystemUI 的 APK**，`AssetManager2::GetResourceId`
+     *      按包名查不到 PackageGroup 就直接返回 0 —— 所以这里连
+     *      `getIdentifier(name, "drawable", "com.android.systemui")` 也拿不到东西，
+     *      必须像 [loadInjectedDrawable] 那样走 `createPackageContext`。
+     */
     private fun loadSystemDrawable(context: android.content.Context, id: String): Drawable? {
-        val name = when (id) {
-            "wifi" -> "stat_sys_wifi"
-            "bluetooth" -> "stat_sys_data_bluetooth"
-            "mobile_data" -> "stat_sys_data_connected"
-            "airplane_mode" -> "stat_sys_airplane_mode"
-            "location" -> "ic_menu_mylocation"
-            "flashlight" -> "ic_menu_camera"
-            "auto_rotate" -> "stat_sys_rotate"
-            "dnd", "mute" -> "ic_lock_silent_mode"
-            "hotspot" -> "stat_sys_tether_wifi"
-            "cast" -> "ic_menu_slideshow"
-            "dark_mode" -> "ic_menu_day"
-            "screenshot" -> "ic_menu_crop"
-            else -> null
-        } ?: return null
-        val resId = context.resources.getIdentifier(name, "drawable", "android")
-        return resId.takeIf { it != 0 }?.let { runCatching { context.getDrawable(it) }.getOrNull() }
+        SystemTileCatalogStore.iconFor(context, id)?.let { return it }
+        val names = SystemTileSpecs.entry(id)?.iconNames.orEmpty()
+        if (names.isEmpty()) return null
+        for (pkg in DRAWABLE_PACKAGES) {
+            for (name in names) {
+                val drawable = runCatching {
+                    // framework 永远在本地 AssetManager 里，可以直查；
+                    // 其它包必须先 createPackageContext 把 APK 载进来。
+                    val res = if (pkg == "android") {
+                        context.resources
+                    } else {
+                        context.createPackageContext(pkg, Context.CONTEXT_IGNORE_SECURITY).resources
+                    }
+                    val resId = res.getIdentifier(name, "drawable", pkg)
+                    if (resId == 0) null else res.getDrawable(resId, null)
+                }.getOrNull()
+                if (drawable != null) return drawable
+            }
+        }
+        return null
     }
 
     private fun styleTileIcon(imageView: ImageView, source: Drawable?, enabled: Boolean, colorIcon: Boolean = false) {
@@ -1327,7 +1374,9 @@ internal object SidebarShortcutController {
         }
         imageView.setPadding(padding, padding, padding, padding)
         imageView.translationX = 2f * density
-        imageView.scaleType = ImageView.ScaleType.CENTER_INSIDE
+        // 用 FIT_CENTER 而不是 CENTER_INSIDE：后者在 drawable 比控件小时**不放大**，
+        // 归一化一旦退化（返回原图）就会原样偏小；FIT_CENTER 两个方向都兜住。
+        imageView.scaleType = ImageView.ScaleType.FIT_CENTER
         imageView.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = 12f * density
@@ -1351,10 +1400,17 @@ internal object SidebarShortcutController {
             imageView.imageTintList = ColorStateList.valueOf(tintColor)
             imageView.imageTintMode = PorterDuff.Mode.SRC_IN
         }
-        // tint 必须烘焙到 crop 之后的最终实例：crop 可能返回新 drawable，
+        // tint 必须烘焙到归一化之后的最终实例：归一化返回的是新的 BitmapDrawable，
         // 源实例上的 setTint 不会带过去；烘焙后即使视图级着色被原生清掉，
         // 展示实例也保持单色。
-        val display = source?.let { cropQuickLaunchDrawable(imageView, it) }?.mutate()?.apply {
+        //
+        // 这里取代了旧的 cropQuickLaunchDrawable：后者以"非白且不透明"作内容判据，
+        // 而 QS 磁贴图标大量是**白色单色字形**，会被整体判成留白直接原图返回 ——
+        // 于是同一排里混着"归一化过"和"没归一化"两种视觉尺寸，就是"有的很小"。
+        // [IconNormalizer] 改以 alpha 通道判形状，白字形一样能量准边界。
+        val display = source
+            ?.let { normalizedIcon(imageView.context, it, trimWhitePlate = true) }
+            ?.mutate()?.apply {
             if (colorIcon) {
                 clearColorFilter()
                 setAlpha(255)
@@ -1366,58 +1422,28 @@ internal object SidebarShortcutController {
         imageView.setImageDrawable(display)
     }
 
-    /** Remove large opaque white margins commonly present in adaptive app icons. */
-    private fun cropQuickLaunchDrawable(imageView: ImageView, source: Drawable): Drawable {
-        val size = 256
-        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        source.setBounds(0, 0, size, size)
-        source.draw(Canvas(bitmap))
-        val pixels = IntArray(size * size)
-        bitmap.getPixels(pixels, 0, size, 0, 0, size, size)
-        var left = size
-        var top = size
-        var right = -1
-        var bottom = -1
-        for (y in 0 until size) for (x in 0 until size) {
-            val color = pixels[y * size + x]
-            val alpha = color ushr 24
-            val red = color ushr 16 and 0xff
-            val green = color ushr 8 and 0xff
-            val blue = color and 0xff
-            val nonWhite = red < 245 || green < 245 || blue < 245
-            if (alpha > 20 && nonWhite) {
-                left = minOf(left, x)
-                top = minOf(top, y)
-                right = maxOf(right, x)
-                bottom = maxOf(bottom, y)
-            }
-        }
-        if (right < left || bottom < top || right - left < 24 || bottom - top < 24) {
-            return source
-        }
-        // CENTER_CROP only crops the View. If the source itself contains white
-        // margins, first create a square crop around the visible artwork.
-        val contentWidth = right - left + 1
-        val contentHeight = bottom - top + 1
-        val side = maxOf(contentWidth, contentHeight).coerceAtMost(size)
-        val centerX = (left + right) / 2
-        val centerY = (top + bottom) / 2
-        val cropLeft = (centerX - side / 2).coerceIn(0, size - side)
-        val cropTop = (centerY - side / 2).coerceIn(0, size - side)
-        val cropped = Bitmap.createBitmap(
-            bitmap,
-            cropLeft,
-            cropTop,
-            side,
-            side,
-        )
-        return BitmapDrawable(imageView.resources, cropped)
-    }
+    /**
+     * 归一化并缓存：把图标的可见内容居中放大到铺满 [ICON_CANVAS_SIZE] 画布。
+     *
+     * 之所以要有缓存：本方法会把 drawable 铺到 512×512 再逐像素量边界，
+     * 而侧边栏条目会被反复绑定。按 drawable 实例缓存（key 弱引用），
+     * [SystemTileCatalogStore] 的 iconCache 保证同一磁贴复用同一实例。
+     *
+     * @param trimWhitePlate 是否剔除"白底 + 图形"里的白底。磁贴图标要：白底会把
+     *        中间的图形衬得偏小；应用图标不要：那里的白底是设计的一部分。
+     */
+    private fun normalizedIcon(context: Context, source: Drawable, trimWhitePlate: Boolean): Drawable =
+        normalizedIconCache[source] ?: IconNormalizer
+            .normalizeDrawable(context, source, ICON_CANVAS_SIZE, trimWhitePlate = trimWhitePlate)
+            .also { normalizedIconCache[source] = it }
 
     /**
      * Quick launch uses the real application artwork rather than the monochrome
      * QS tile treatment. Keep a square viewport and let CENTER_CROP clip excess
      * artwork, matching the sidebar's cover-style icon presentation.
+     *
+     * 归一化后内容已铺满正方形画布，CENTER_CROP 到方形 viewport 即恰好吻合，
+     * 不再出现"画布一样大、画面只占一半"的偏小图标。
      */
     private fun styleQuickLaunchIcon(imageView: ImageView, source: Drawable?) {
         imageView.layoutParams = imageView.layoutParams?.apply {
@@ -1432,11 +1458,16 @@ internal object SidebarShortcutController {
         imageView.imageTintMode = null
         imageView.clearColorFilter()
         imageView.imageAlpha = 255
-        source?.mutate()?.apply {
-            clearColorFilter()
-            alpha = 255
-        }
-        imageView.setImageDrawable(source)
+        // 同样先归一化：activity 图标常带大量透明边距（圆形图标尤其明显），
+        // 而 CENTER_CROP 只缩放画布、消不掉留白 —— 不处理就比同排的小一圈。
+        // 这里 trimWhitePlate 传 false：应用图标的白底是设计的一部分。
+        val display = source
+            ?.let { normalizedIcon(imageView.context, it, trimWhitePlate = false) }
+            ?.mutate()?.apply {
+                clearColorFilter()
+                alpha = 255
+            }
+        imageView.setImageDrawable(display)
     }
 
     private fun resetNativeIcon(holder: Any) {
@@ -1504,11 +1535,36 @@ internal object SidebarShortcutController {
         configListenerRegistered = true
     }
 
+    /**
+     * 引导系统磁贴目录。
+     *
+     * 先加载磁盘缓存，让"本机支持哪些磁贴"这个判定在面板首次渲染前就生效；
+     * 再主动向 SystemUI 拉取最新一份（补齐真图标与真实文案）。
+     *
+     * 之所以是"主动拉"而不是干等广播：两个进程的启动顺序不确定，SystemUI 广播那次
+     * 安全中心可能还没起来。另外 SystemUI 的宿主本身也可能尚未就绪而丢弃请求，
+     * 所以隔几秒补拉两次。
+     */
+    private fun bootstrapSystemCatalog() {
+        val context = appContext() ?: return
+        SystemTileCatalogStore.loadFromDisk(context)
+        val handler = Handler(Looper.getMainLooper())
+        listOf(0L, 6_000L, 20_000L).forEach { delay ->
+            handler.postDelayed({
+                if (!SystemTileCatalogStore.ready) SystemTileCatalogStore.requestCatalog(context)
+            }, delay)
+        }
+    }
+
     private fun installStateReceiver() {
         if (stateReceiverInstalled) return
         val context = appContext() ?: return
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == SystemTileCatalogProtocol.ACTION_CATALOG) {
+                    onSystemCatalog(context, intent)
+                    return
+                }
                 if (intent.action != SidebarQsBridgeHook.ACTION_STATE) return
                 val rawId = intent.getStringExtra(SidebarQsBridgeHook.EXTRA_COMPONENT)
                     ?: intent.getStringExtra(SidebarQsBridgeHook.EXTRA_SPEC)
@@ -1527,13 +1583,48 @@ internal object SidebarShortcutController {
                 }
             }
         }
+        val filter = IntentFilter().apply {
+            addAction(SidebarQsBridgeHook.ACTION_STATE)
+            addAction(SystemTileCatalogProtocol.ACTION_CATALOG)
+        }
         runCatching {
             val register = Context::class.java.getMethod(
                 "registerReceiver", BroadcastReceiver::class.java, IntentFilter::class.java, Int::class.javaPrimitiveType,
             )
-            register.invoke(context, receiver, IntentFilter(SidebarQsBridgeHook.ACTION_STATE), 4)
+            // 必须 RECEIVER_EXPORTED(=2)。原先写 4 并注释为 EXPORTED，但 API 33+ 里
+            // 4 == RECEIVER_NOT_EXPORTED，等于主动拒收外部广播 —— 这正是"点击正常、
+            // 状态永远回不来"的根因：
+            //   安全中心 uid 1000（核心 uid）→ SystemUI 的 NOT_EXPORTED 接收器 会被豁免，送达；
+            //   SystemUI uid 10xxx          → 安全中心的 NOT_EXPORTED 接收器 被丢弃。
+            // 再叠加发送端没 setPackage（隐式广播），状态通道必然静默死亡。
+            register.invoke(context, receiver, filter, Context.RECEIVER_EXPORTED)
             stateReceiverInstalled = true
-        }.recoverCatching { context.registerReceiver(receiver, IntentFilter(SidebarQsBridgeHook.ACTION_STATE)) }
+        }.recoverCatching { context.registerReceiver(receiver, filter) }
+    }
+
+    /**
+     * 收到 SystemUI 推来的系统磁贴目录。
+     *
+     * 目录同时决定三件事：哪些系统磁贴可以注入（本机不支持的不在其中）、
+     * 用哪个真图标、以及真实文案。
+     *
+     * 顺序很重要：先落 [SystemTileCatalogStore]，再重绑已有图标，最后重新注入一次。
+     * 重新注入是必需的 —— 可用集变了意味着**条目增删**，只重绑图标无法移除
+     * 那些本机并不支持的旧条目。
+     */
+    private fun onSystemCatalog(context: Context, intent: Intent) {
+        val entries = SystemTileCatalogProtocol.readEntries(intent)
+        if (entries.isEmpty()) return
+        if (entries.map { it.spec }.toSet() == SystemTileCatalogStore.specsSnapshot()) return
+        SystemTileCatalogStore.onCatalog(context, entries)
+        ConfigManager.module()?.let { log(it, "system catalog: ${entries.size} tiles") }
+        tileViews.entries.toList().forEach { (id, view) ->
+            val drawable = loadIconUri(view.context, customIconUri(id))
+                ?: loadInjectedDrawable(view.context, id)
+                ?: loadSystemDrawable(view.context, id)
+            styleTileIcon(view, drawable, tileState[id] == true, colorIconEnabled(id))
+        }
+        refreshInjectedShortcuts()
     }
 
     private fun requestTileState(context: Context, id: String) {
@@ -1630,28 +1721,30 @@ internal object SidebarShortcutController {
         )
     }
 
-    private val catalogIdToSpec: Map<String, String> = mapOf(
-        "wifi" to "wifi",
-        "bluetooth" to "bt",
-        "flashlight" to "flashlight",
-        "airplane_mode" to "airplane",
-        "mobile_data" to "cell",
-        "location" to "location",
-        "auto_rotate" to "rotation",
-        "dnd" to "dnd",
-        "dark_mode" to "dark",
-        "hotspot" to "hotspot",
-        "cast" to "cast",
-        "mute" to "sound",
-        "screenshot" to "screenshot",
-    )
+    /**
+     * 目录 id → SystemUI 真实 spec。
+     *
+     * 清单来自 [SystemTileSpecs]，与 Compose 端同源。此处**不再手工维护** ——
+     * 之前手写的表里有 3 条是 AOSP 名字、在 MIUI 上无效（点了没反应）：
+     *   `location` → 应为 `gps`
+     *   `dnd`      → 应为 `quietmode`
+     *   `mute`     → 应为 `mute`（原写 `sound`）
+     * 无效 spec 不会崩，`MiuiQSFactory` 只打一行
+     * `Log.w("MiuiQSFactory", "No stock tile spec: xxx")` 并返回 null。
+     */
+    private val catalogIdToSpec: Map<String, String> =
+        SystemTileSpecs.ALL.associate { it.id to it.spec }
 
     // SystemUI 回传的是 tile spec（bt/cell），与目录 id（bluetooth/mobile_data）
     // 不同名，状态广播需要反查回目录 id 才能命中 tileViews/tileState。
+    // specToCatalogId 只覆盖内置表；动态 spec（本机独有）的 id 就是 spec 本身，
+    // 这种同一性由 SystemTileCatalogStore 保证，这里无需额外映射。
     private val specToCatalogId: Map<String, String> =
         catalogIdToSpec.entries.associate { (catalog, spec) -> spec to catalog }
 
-    private fun systemTileSpec(id: String): String? = catalogIdToSpec[id]
+    /** 目录 id → spec。内置表命中不了时，交给 [SystemTileCatalogStore] 查动态条目。 */
+    private fun systemTileSpec(id: String): String? =
+        catalogIdToSpec[id] ?: SystemTileCatalogStore.specOf(id)
 
     private fun thirdPartyLabel(componentId: String): String {
         tileLabelCache[componentId]?.let { return it }

@@ -101,7 +101,10 @@ object ConfigManager {
 
     fun getStringSet(key: String, default: Set<String> = emptySet()): Set<String> =
         try {
-            prefsForKey(key)?.getStringSet(key, default)?.toSet() ?: default
+            prefsForKey(key)?.getStringSet(key, default)
+                ?.filterNot { it == PrefKeys.EMPTY_SET_MARKER }
+                ?.toSet()
+                ?: default
         } catch (_: ClassCastException) {
             default
         }

@@ -9,6 +9,8 @@ import androidx.annotation.StringRes
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.annotation.DrawableRes
 import io.github.z1812.hyperdock.R
+import io.github.z1812.hyperdock.systemtile.SystemTileCatalogCache
+import io.github.z1812.hyperdock.systemtile.SystemTileSpecs
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Carrier
 import top.yukonga.miuix.kmp.icon.extended.Location
@@ -33,52 +35,85 @@ data class ShortcutItem(
     val packageName: String? = null,
     /** 第三方 QS Tile 组件名，用于加载该快捷方式自身图标。 */
     val tileComponent: ComponentName? = null,
+    /** 系统磁贴的真实图标（SystemUI 从磁贴本体取出后缓存成 PNG 的本地路径）。 */
+    val systemIconPath: String? = null,
 )
 
 /** 快捷方式目录：内置系统开关 + 已安装第三方 QS Tile。 */
 object ShortcutCatalog {
 
-    private data class SystemEntry(
-        val id: String,
-        @StringRes val labelRes: Int,
-        val icon: ImageVector?,
+    /**
+     * 少数条目使用 Miuix 矢量图标；其余为 null，走通用占位图标。
+     * 清单本身（id / spec / 文案）统一来自 [SystemTileSpecs]，避免两侧漂移。
+     */
+    private val SYSTEM_ICONS: Map<String, ImageVector> = mapOf(
+        "screenshot" to MiuixIcons.ScreenCapture,
+        "mobile_data" to MiuixIcons.Carrier,
+        "location" to MiuixIcons.Location,
+        "auto_rotate" to MiuixIcons.RotateLeft,
+        "dark_mode" to MiuixIcons.Theme,
+        "cast" to MiuixIcons.ScreenMirroring,
+        "mute" to MiuixIcons.VolumeOff,
     )
 
-    private val SYSTEM_ENTRIES = listOf(
-        SystemEntry("screenshot", R.string.shortcut_screenshot, MiuixIcons.ScreenCapture),
-        SystemEntry("wifi", R.string.shortcut_wifi, null),
-        SystemEntry("bluetooth", R.string.shortcut_bluetooth, null),
-        SystemEntry("flashlight", R.string.shortcut_flashlight, null),
-        SystemEntry("airplane_mode", R.string.shortcut_airplane_mode, null),
-        SystemEntry("mobile_data", R.string.shortcut_mobile_data, MiuixIcons.Carrier),
-        SystemEntry("location", R.string.shortcut_location, MiuixIcons.Location),
-        SystemEntry("auto_rotate", R.string.shortcut_auto_rotate, MiuixIcons.RotateLeft),
-        SystemEntry("dnd", R.string.shortcut_dnd, null),
-        SystemEntry("dark_mode", R.string.shortcut_dark_mode, MiuixIcons.Theme),
-        SystemEntry("hotspot", R.string.shortcut_hotspot, null),
-        SystemEntry("cast", R.string.shortcut_cast, MiuixIcons.ScreenMirroring),
-        SystemEntry("mute", R.string.shortcut_mute, MiuixIcons.VolumeOff),
+    /** 已解析的系统磁贴条目。 */
+    private class SystemEntry(
+        val id: String,
+        val name: String,
+        val icon: ImageVector?,
+        val iconPath: String?,
     )
 
     private val HYPER_ISLAND_ENTRIES = listOf(
-        SystemEntry("hyperisland_motion_photo", R.string.shortcut_hyperisland_motion_photo, null),
-        SystemEntry("hyperisland_screen_record", R.string.shortcut_hyperisland_screen_record, null),
+        HyperIslandEntry("hyperisland_motion_photo", R.string.shortcut_hyperisland_motion_photo),
+        HyperIslandEntry("hyperisland_screen_record", R.string.shortcut_hyperisland_screen_record),
     )
+
+    private class HyperIslandEntry(val id: String, @StringRes val labelRes: Int)
+
+    /**
+     * 系统磁贴清单。
+     *
+     * 优先用 SystemUI 探测回来的目录（[SystemTileCatalogCache]）：里面只有**本机确实
+     * 支持**的磁贴 —— SystemUI 侧逐个 `createTile` + `isAvailable()` 筛过 —— 且文案取自
+     * 磁贴本身（已本地化），图标是从磁贴本体取出的真实图标。
+     *
+     * 目录未就绪（首次安装、广播尚未到达）时回退内置 [SystemTileSpecs] 全表，
+     * 保证页面始终可用。
+     */
+    private fun systemEntries(context: Context): List<SystemEntry> {
+        val catalog = SystemTileCatalogCache.load(context)
+        if (catalog.isEmpty()) {
+            return SystemTileSpecs.ALL
+                .filter { it.inPicker }
+                .map { SystemEntry(it.id, context.getString(it.labelRes), SYSTEM_ICONS[it.id], null) }
+        }
+        return catalog.map { item ->
+            SystemEntry(item.id, item.label, SYSTEM_ICONS[item.id], item.iconFile)
+        }
+    }
 
     fun all(context: Context): List<ShortcutItem> {
         val systemOwner = context.getString(R.string.shortcut_owner_system)
-        val system = SYSTEM_ENTRIES.map { entry ->
+        val system = systemEntries(context).map { entry ->
             ShortcutItem(
                 id = entry.id,
-                name = context.getString(entry.labelRes),
+                name = entry.name,
                 owner = systemOwner,
                 isSystem = true,
                 icon = entry.icon,
+                systemIconPath = entry.iconPath,
             )
         }
         val hyperIslandOwner = context.getString(R.string.shortcut_owner_hyperisland)
         val hyperIsland = HYPER_ISLAND_ENTRIES.map { entry ->
-            ShortcutItem(entry.id, context.getString(entry.labelRes), hyperIslandOwner, true, drawableRes = R.drawable.ic_focus_ticker_screen_recorder)
+            ShortcutItem(
+                id = entry.id,
+                name = context.getString(entry.labelRes),
+                owner = hyperIslandOwner,
+                isSystem = true,
+                drawableRes = R.drawable.ic_focus_ticker_screen_recorder,
+            )
         }
         return system + hyperIsland + thirdPartyTiles(context).sortedBy { it.name.lowercase() }
     }

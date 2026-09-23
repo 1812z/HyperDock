@@ -64,6 +64,7 @@ import io.github.z1812.hyperdock.compose.data.PrefsRepository
 import io.github.z1812.hyperdock.compose.data.rememberBooleanPreference
 import io.github.z1812.hyperdock.compose.data.rememberStringPreference
 import io.github.z1812.hyperdock.compose.data.rememberStringSetPreference
+import io.github.z1812.hyperdock.utils.IconNormalizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Button
@@ -764,7 +765,10 @@ private fun resolveActivity(context: Context, component: ComponentName?): QuickA
 private fun Drawable.toBitmap(context: Context): Bitmap {
     val size = (48 * context.resources.displayMetrics.density).toInt().coerceAtLeast(48)
     val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-    setBounds(0, 0, size, size)
+    // 按固有比例 contain，不能 setBounds 到整幅：Drawable 会拉伸填满 bounds，
+    // 长方形应用图标会被压成正方形。
+    val bounds = IconNormalizer.containBounds(this, size)
+    setBounds(bounds.left, bounds.top, bounds.right, bounds.bottom)
     draw(Canvas(bitmap))
     return bitmap
 }
@@ -831,7 +835,9 @@ private fun QuickFunctionIcon(activity: QuickActivity, customUri: String? = null
                     val size = 96
                     Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also { bitmap ->
                         val canvas = Canvas(bitmap)
-                        drawable.setBounds(0, 0, size, size)
+                        // 同上：contain 放置，避免长方形图标被拉伸成正方形。
+                        val bounds = IconNormalizer.containBounds(drawable, size)
+                        drawable.setBounds(bounds.left, bounds.top, bounds.right, bounds.bottom)
                         drawable.draw(canvas)
                     }
                 }

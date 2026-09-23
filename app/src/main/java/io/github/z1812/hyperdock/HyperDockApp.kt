@@ -266,7 +266,9 @@ class HyperDockApp : Application(), XposedServiceHelper.OnServiceListener {
             is String -> editor.putString(key, value)
             is Set<*> -> {
                 if (value.any { it !is String }) return false
-                editor.putStringSet(key, value.filterIsInstance<String>().toSet())
+                val strings = value.filterIsInstance<String>().toSet()
+                // 空集合以占位符形式写入，绕开框架对空 Set 远程写入的丢失问题
+                editor.putStringSet(key, if (strings.isEmpty()) setOf(PrefKeys.EMPTY_SET_MARKER) else strings)
             }
             null -> editor.remove(key)
             else -> return false

@@ -12,6 +12,7 @@ import android.graphics.RectF
 import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +29,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -50,6 +52,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.z1812.hyperdock.PrefKeys
 import io.github.z1812.hyperdock.R
+import io.github.z1812.hyperdock.systemtile.SystemTileCatalogCache
 import io.github.z1812.hyperdock.compose.component.DetailPage
 import io.github.z1812.hyperdock.compose.component.ItemActionPopup
 import io.github.z1812.hyperdock.compose.component.ItemEditDialog
@@ -65,6 +68,7 @@ import io.github.z1812.hyperdock.compose.data.ShortcutItem
 import io.github.z1812.hyperdock.compose.data.rememberBooleanPreference
 import io.github.z1812.hyperdock.compose.data.rememberStringPreference
 import io.github.z1812.hyperdock.compose.data.rememberStringSetPreference
+import io.github.z1812.hyperdock.utils.IconNormalizer
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
@@ -77,6 +81,8 @@ import top.yukonga.miuix.kmp.icon.extended.Edit
 import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
+import java.io.File
+import kotlinx.coroutines.delay
 
 @Composable
 internal fun ShortcutPage(
@@ -91,12 +97,21 @@ internal fun ShortcutPage(
     val customLabels = rememberStringSetPreference(prefs, KEY_SHORTCUTS_CUSTOM_LABELS)
     val customIcons = rememberStringSetPreference(prefs, KEY_SHORTCUTS_CUSTOM_ICON_URIS)
     val colorIcons = rememberStringSetPreference(prefs, KEY_SHORTCUTS_COLOR_ICONS)
-    val catalog = remember { ShortcutCatalog.all(context) }
+    var catalog by remember { mutableStateOf(ShortcutCatalog.all(context)) }
     var flights by remember { mutableStateOf<List<ItemFlight>?>(null) }
     var popupFor by remember { mutableStateOf<ShortcutItem?>(null) }
     var editing by remember { mutableStateOf<ShortcutItem?>(null) }
     var hyperIslandPending by remember { mutableStateOf<ShortcutItem?>(null) }
     val cardBounds = remember { mutableStateMapOf<String, WindowRect>() }
+
+    // 系统磁贴目录由 SystemUI 推送。首次安装、或广播到达时模块 App 还没启动过的情况下，
+    // 这里主动补拉一次；拿到后重读列表 —— 目录会让本机不支持的磁贴从选择器里消失。
+    LaunchedEffect(Unit) {
+        if (SystemTileCatalogCache.isReady(context)) return@LaunchedEffect
+        SystemTileCatalogCache.requestRefresh(context)
+        delay(1_200L)
+        catalog = ShortcutCatalog.all(context)
+    }
 
     fun updateBounds(id: String, bounds: WindowRect) {
         if (cardBounds[id] != bounds) cardBounds[id] = bounds
@@ -455,6 +470,11 @@ private fun ShortcutCard(
 @Composable
 private fun ShortcutIcon(item: ShortcutItem, customIconUri: String? = null, colorIcon: Boolean = false) {
     val custom = rememberCustomIconBitmap(customIconUri)
+    // 系统磁贴的真实图标：SystemUI 从磁贴本体取出后光栅化成 PNG，模块 App 落盘缓存。
+    // 复用自定义图标的解码通道（file:// 也能走 ContentResolver.openInputStream）。
+    val systemIcon = rememberCustomIconBitmap(
+        item.systemIconPath?.let { Uri.fromFile(File(it)).toString() },
+    )
     val icon = item.icon
     val drawableRes = item.drawableRes
     val packageName = item.packageName
@@ -469,6 +489,13 @@ private fun ShortcutIcon(item: ShortcutItem, customIconUri: String? = null, colo
             } else {
                 null
             },
+        )
+        systemIcon != null -> Image(
+            // QS 磁贴图标是单色字形，alpha 通道即形状，跟随主题色才能与系统一致。
+            bitmap = systemIcon.asImageBitmap(),
+            contentDescription = null,
+            modifier = Modifier.size(28.dp),
+            colorFilter = ColorFilter.tint(MiuixTheme.colorScheme.onSurfaceContainer),
         )
         drawableRes != null -> Image(
             painter = painterResource(drawableRes), contentDescription = null,
@@ -604,7 +631,12 @@ private fun Drawable.toShortcutIconBitmap(sizePx: Int): ShortcutIconBitmap? {
     val layer = monochrome ?: adaptive?.foreground ?: this
     val hiRes = maxOf(sizePx * 4, 128)
     val source = Bitmap.createBitmap(hiRes, hiRes, Bitmap.Config.ARGB_8888)
-    layer.setBounds(0, 0, hiRes, hiRes)
+    // 按固有比例 contain 放置，不能 setBounds(0, 0, hiRes, hiRes)：Drawable 会拉伸填满
+    // bounds，而 VectorDrawable 的 scaleX/scaleY 各自按 `bounds ÷ viewport` 算，
+    // 非自适应的长方形图标会被直接压成正方形。自适应图标的图层本身是 108dp 方形，
+    // 这一步对它等价于铺满，形状不变。
+    val layerBounds = IconNormalizer.containBounds(layer, hiRes)
+    layer.setBounds(layerBounds.left, layerBounds.top, layerBounds.right, layerBounds.bottom)
     layer.draw(Canvas(source))
 
     var pixels = IntArray(hiRes * hiRes)
@@ -629,13 +661,18 @@ private fun Drawable.toShortcutIconBitmap(sizePx: Int): ShortcutIconBitmap? {
             fitToContent = true
             true
         }
-        stats.isSmallGlyph -> true
+        // 小字形：内容本就没铺满画布（透明边距多）。这里必须一并标记裁剪放大 ——
+        // 只设 tint 而不裁剪的话，位图里的图形仍偏小，显示出来就比同排小一圈。
+        stats.isSmallGlyph -> {
+            fitToContent = true
+            true
+        }
         else -> false // 大面积但无法可靠抠底的彩色整图保留原样
     }
 
     source.setPixels(pixels, 0, hiRes, 0, 0, hiRes, hiRes)
 
-    val sourceRect = if (fitToContent) {
+    val contentRect = if (fitToContent) {
         pixels.visibleBounds(hiRes)?.let { bounds ->
             val padding = maxOf(2, hiRes / 32)
             Rect(
@@ -648,6 +685,15 @@ private fun Drawable.toShortcutIconBitmap(sizePx: Int): ShortcutIconBitmap? {
     } else {
         null
     } ?: Rect(0, 0, hiRes, hiRes)
+    // 源区域必须和目标一样是正方形：drawBitmap 是逐边映射，长方形源 → 正方形目标会把
+    // 内容沿短边拉长（长方形图标被压成正方形）。以较长边为准居中扩成正方形即可 ——
+    // 扩出来的那圈本来就是留白，内容是等比缩放，形状不变。
+    val contentSide = maxOf(contentRect.width(), contentRect.height()).coerceAtMost(hiRes)
+    val contentCenterX = (contentRect.left + contentRect.right) / 2
+    val contentCenterY = (contentRect.top + contentRect.bottom) / 2
+    val squareLeft = (contentCenterX - contentSide / 2).coerceIn(0, hiRes - contentSide)
+    val squareTop = (contentCenterY - contentSide / 2).coerceIn(0, hiRes - contentSide)
+    val sourceRect = Rect(squareLeft, squareTop, squareLeft + contentSide, squareTop + contentSide)
     val outputPadding = if (fitToContent) sizePx * ICON_CONTENT_PADDING else 0f
 
     val output = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)

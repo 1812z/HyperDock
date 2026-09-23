@@ -100,6 +100,34 @@
     <string name="shortcut_hotspot">个人热点</string>
     <string name="shortcut_cast">投屏</string>
     <string name="shortcut_mute">静音</string>
+    <!-- 系统磁贴补充项，与 SystemTileSpecs 的 id 一一对应 -->
+    <string name="shortcut_nfc">NFC</string>
+    <string name="shortcut_eye_comfort">护眼模式</string>
+    <string name="shortcut_night_mode">夜间模式</string>
+    <string name="shortcut_power_saver">省电模式</string>
+    <string name="shortcut_super_saver">超级省电</string>
+    <string name="shortcut_sync">同步</string>
+    <string name="shortcut_vibrate">震动</string>
+    <string name="shortcut_auto_brightness">自动亮度</string>
+    <string name="shortcut_screen_lock">锁屏</string>
+    <string name="shortcut_one_handed">单手模式</string>
+    <string name="shortcut_work_mode">工作模式</string>
+    <string name="shortcut_color_inversion">颜色反转</string>
+    <string name="shortcut_color_correction">色彩校正</string>
+    <string name="shortcut_extra_dim">极暗模式</string>
+    <string name="shortcut_microphone">麦克风访问</string>
+    <string name="shortcut_camera_access">摄像头访问</string>
+    <string name="shortcut_task_manager">任务管理</string>
+    <string name="shortcut_alarm">闹钟</string>
+    <string name="shortcut_settings">设置</string>
+    <string name="shortcut_satellite">卫星通信</string>
+    <string name="shortcut_cooling_fan">散热风扇</string>
+    <string name="shortcut_aspect_ratio">显示比例</string>
+    <string name="shortcut_vowifi">Wi-Fi 通话</string>
+    <string name="shortcut_wallet">钱包</string>
+    <string name="shortcut_google_pay">Google Pay</string>
+    <string name="shortcut_google_home">Google Home</string>
+    <string name="shortcut_device_controls">设备控制</string>
 
     <string name="misc">杂项</string>
     <string name="hide_desktop_icon">隐藏桌面图标</string>

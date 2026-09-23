@@ -54,6 +54,13 @@ object PrefKeys {
     const val CONFIG_APP_VERSION = "config_app_version"
     const val CONFIG_SCHEMA_VERSION = "config_schema_version"
 
+    /**
+     * StringSet 空集合占位元素。框架 RemotePreferences 对空 Set 的远程写入
+     * 会丢失（值不更新/缓存不刷新/通知不派发），因此空集合一律以 {本占位符}
+     * 形式落盘与同步，读取端统一过滤。业务值不会出现此字符串。
+     */
+    const val EMPTY_SET_MARKER = "__hyperdock_empty_set__"
+
     /** 需要放入 core 组、供 Hook 进程最先读取的键。 */
     val CORE = setOf(DEBUG_LOG, SIDEBAR_EXPAND_ALL_APPS, SIDEBAR_PANEL_CACHE, SIDEBAR_STAGGERED_EXPAND)
 
