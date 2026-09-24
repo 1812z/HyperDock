@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import io.github.z1812.hyperdock.PrefKeys
 import io.github.z1812.hyperdock.R
 import io.github.z1812.hyperdock.compose.component.DetailPage
+import io.github.z1812.hyperdock.compose.component.PreferenceDropdown
 import io.github.z1812.hyperdock.compose.component.PreferenceSwitch
 import io.github.z1812.hyperdock.compose.component.SectionTitle
 import io.github.z1812.hyperdock.compose.component.SettingsActionWithArrow
@@ -58,6 +59,15 @@ internal fun SidebarBehaviorPage(
     val staggeredExpand = rememberBooleanPreference(prefs, PrefKeys.SIDEBAR_STAGGERED_EXPAND, false)
     val shortcutsEnabled = rememberBooleanPreference(prefs, PrefKeys.SHORTCUTS_ENABLED, false)
     val quickActionsEnabled = rememberBooleanPreference(prefs, PrefKeys.QUICK_FUNCTIONS_ENABLED, false)
+    val autoCloseMode = rememberStringPreference(prefs, PrefKeys.SIDEBAR_AUTO_CLOSE_MODE, PrefKeys.AUTO_CLOSE_ALL)
+    val autoCloseLabels = remember {
+        listOf(
+            PrefKeys.AUTO_CLOSE_OFF to R.string.sidebar_auto_close_off,
+            PrefKeys.AUTO_CLOSE_SHORTCUTS to R.string.sidebar_auto_close_shortcuts,
+            PrefKeys.AUTO_CLOSE_QUICK_LAUNCH to R.string.sidebar_auto_close_quick_launch,
+            PrefKeys.AUTO_CLOSE_ALL to R.string.sidebar_auto_close_all,
+        )
+    }
     val visible = rememberStringSetPreference(prefs, PrefKeys.SIDEBAR_SECTION_VISIBILITY)
     val order = rememberStringPreference(prefs, PrefKeys.SIDEBAR_SECTION_ORDER, DEFAULT_SECTION_ORDER)
     val labels = remember {
@@ -187,6 +197,18 @@ internal fun SidebarBehaviorPage(
                         staggeredExpand.value = it
                         prefs.putBoolean(PrefKeys.SIDEBAR_STAGGERED_EXPAND, it)
                     }
+                }
+                PreferenceDropdown(
+                    title = stringResource(R.string.sidebar_auto_close),
+                    summary = stringResource(R.string.sidebar_auto_close_summary),
+                    icon = null,
+                    items = autoCloseLabels.map { stringResource(it.second) },
+                    selectedIndex = autoCloseLabels.indexOfFirst { it.first == autoCloseMode.value }
+                        .takeIf { it >= 0 } ?: PrefKeys.AUTO_CLOSE_MODES.indexOf(PrefKeys.AUTO_CLOSE_ALL),
+                ) { index ->
+                    val next = autoCloseLabels.getOrNull(index)?.first ?: PrefKeys.AUTO_CLOSE_ALL
+                    autoCloseMode.value = next
+                    prefs.putString(PrefKeys.SIDEBAR_AUTO_CLOSE_MODE, next)
                 }
             }
         }

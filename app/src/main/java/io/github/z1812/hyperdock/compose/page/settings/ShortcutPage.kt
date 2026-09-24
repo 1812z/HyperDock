@@ -107,7 +107,6 @@ internal fun ShortcutPage(
 ) {
     val context = LocalContext.current
     val enabled = rememberBooleanPreference(prefs, KEY_SHORTCUTS_ENABLED, false)
-    val autoClose = rememberBooleanPreference(prefs, KEY_SHORTCUTS_AUTO_CLOSE, false)
     val added = rememberStringSetPreference(prefs, KEY_SHORTCUTS_ADDED)
     val order = rememberStringPreference(prefs, KEY_SHORTCUTS_ORDER, "")
     val customLabels = rememberStringSetPreference(prefs, KEY_SHORTCUTS_CUSTOM_LABELS)
@@ -313,16 +312,6 @@ internal fun ShortcutPage(
                         }.toMutableSet().apply { if (it) add("shortcuts") else remove("shortcuts") }
                         prefs.putStringSet(PrefKeys.SIDEBAR_SECTION_VISIBILITY, sections)
                         prefs.putBoolean(PrefKeys.SIDEBAR_SECTION_CONFIGURED, true)
-                    }
-                    PreferenceSwitch(
-                        title = stringResource(R.string.shortcut_auto_close),
-                        summary = stringResource(R.string.shortcut_auto_close_summary),
-                        icon = null,
-                        checked = autoClose.value,
-                        enabled = enabled.value,
-                    ) {
-                        autoClose.value = it
-                        prefs.putBoolean(KEY_SHORTCUTS_AUTO_CLOSE, it)
                     }
                     PreferenceSwitch(
                         title = stringResource(R.string.shortcut_custom_style),
@@ -983,7 +972,6 @@ private val ThirdPartyIconSize = 32.dp
 private const val KEY_SHORTCUTS_ENABLED = PrefKeys.SHORTCUTS_ENABLED
 private const val KEY_SHORTCUTS_ADDED = PrefKeys.SHORTCUTS_ADDED
 private const val KEY_SHORTCUTS_ORDER = PrefKeys.SHORTCUTS_ORDER
-private const val KEY_SHORTCUTS_AUTO_CLOSE = PrefKeys.SHORTCUTS_AUTO_CLOSE
 private const val KEY_SHORTCUTS_CUSTOM_LABELS = PrefKeys.SHORTCUTS_CUSTOM_LABELS
 private const val KEY_SHORTCUTS_CUSTOM_ICON_URIS = PrefKeys.SHORTCUTS_CUSTOM_ICON_URIS
 private const val KEY_SHORTCUTS_COLOR_ICONS = PrefKeys.SHORTCUTS_COLOR_ICONS

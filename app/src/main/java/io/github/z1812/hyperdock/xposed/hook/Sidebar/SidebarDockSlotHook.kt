@@ -602,7 +602,14 @@ object SidebarDockSlotHook : BaseHook() {
     private fun launch(context: Context, id: String, module: XposedModule) {
         if (id.isBlank()) return
         val handled = runCatching { SidebarShortcutController.launchById(context, id) }.getOrDefault(false)
-        log(module, "slot clicked id=$id handled=$handled")
+        // 与「全部应用」面板里注入的快捷方式走同一套分流规则（见 shouldAutoClose）：
+        // 开关类磁贴不收起，其余按「行为 - 点击后自动收起侧边栏」的取值决定。
+        val closing = handled && runCatching { SidebarShortcutController.shouldAutoClose(id) }.getOrDefault(false)
+        log(module, "slot clicked id=$id handled=$handled close=$closing")
+        if (closing) {
+            val ok = SidebarCloseHook.closeSidebar()
+            log(module, "auto close sidebar=$ok")
+        }
     }
 
     // ── 分割线加长 ────────────────────────────────────────────────────────────

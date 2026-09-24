@@ -65,8 +65,12 @@
 
     <string name="shortcuts">快捷方式</string>
     <string name="shortcuts_summary">在全部应用面板与侧边栏展示自定义快捷方式</string>
-    <string name="shortcut_auto_close">自动关闭侧边栏</string>
-    <string name="shortcut_auto_close_summary">点击快捷方式后自动收起侧边栏</string>
+    <string name="sidebar_auto_close">点击后自动收起侧边栏</string>
+    <string name="sidebar_auto_close_summary">选择哪些条目点击后自动收起侧边栏。打开应用始终收起，开关类磁贴（WiFi、蓝牙等）始终不收起，均与原生一致。</string>
+    <string name="sidebar_auto_close_off">不自动收起</string>
+    <string name="sidebar_auto_close_shortcuts">仅内置快捷方式</string>
+    <string name="sidebar_auto_close_quick_launch">仅快速启动</string>
+    <string name="sidebar_auto_close_all">所有场景（默认）</string>
     <string name="shortcut_custom_style">样式自定义</string>
     <string name="shortcut_custom_style_summary">自定义快捷方式在关闭与开启状态下的背景和图标颜色</string>
     <string name="shortcut_style_background_off">关闭状态背景</string>
