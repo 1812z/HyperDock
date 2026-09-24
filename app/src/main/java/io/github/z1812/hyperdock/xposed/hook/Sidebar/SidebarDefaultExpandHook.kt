@@ -52,7 +52,7 @@ object SidebarDefaultExpandHook : BaseHook() {
         }
 
         val classLoader = param.defaultClassLoader
-        val openMethod = findSidebarOpenMethod(classLoader)
+        val openMethod = SidebarExpandDexDiscovery.findOpenMethod(classLoader)
         if (openMethod == null) {
             logWarn(module, "normal sidebar open method unavailable")
             return
@@ -359,18 +359,6 @@ object SidebarDefaultExpandHook : BaseHook() {
                 method.returnType == Void.TYPE && method.parameterCount == 6 &&
                     method.parameterTypes.all { it == Int::class.javaPrimitiveType }
             }
-        }
-    }
-
-    private fun findSidebarOpenMethod(loader: ClassLoader): Method? {
-        return SidebarExpandDexDiscovery.find(loader).asSequence().flatMap { type ->
-            runCatching { type.declaredMethods.asSequence() }.getOrDefault(emptySequence())
-        }.firstOrNull { method ->
-            val p = method.parameterTypes
-            Modifier.isStatic(method.modifiers) && method.returnType == Void.TYPE && p.size == 6 &&
-                p[1] == Boolean::class.javaPrimitiveType &&
-                p[2] == Float::class.javaPrimitiveType && p[3] == Float::class.javaPrimitiveType &&
-                Runnable::class.java.isAssignableFrom(p[4]) && Runnable::class.java.isAssignableFrom(p[5])
         }
     }
 

@@ -1754,7 +1754,9 @@ internal object SidebarShortcutController {
     }
 
     private fun handleInjectedModelClick(model: Any, context: android.content.Context): Boolean {
-        val handled = handleInjectedModelClickInner(model, context)
+        val quickInfo = quickInfoFromModel(model) ?: return false
+        val id = normalizeComponentId(quickInfoId(quickInfo).removePrefix(ID_PREFIX))
+        val handled = launchById(context, id)
         if (handled && ConfigManager.getBoolean(PrefKeys.SHORTCUTS_AUTO_CLOSE, false)) {
             if (!SidebarCloseHook.closeSidebar()) {
                 Log.w(TAG, "auto close requested but failed")
@@ -1763,9 +1765,23 @@ internal object SidebarShortcutController {
         return handled
     }
 
-    private fun handleInjectedModelClickInner(model: Any, context: android.content.Context): Boolean {
-        val quickInfo = quickInfoFromModel(model) ?: return false
-        val id = normalizeComponentId(quickInfoId(quickInfo).removePrefix(ID_PREFIX))
+    /**
+     * 按条目 id 启动。既服务于注入到「全部应用」面板的快捷方式，也服务于两列模式下
+     * 速记旁那一格（[SidebarDockSlotHook]），两者共用同一套分流规则。
+     */
+    internal fun launchById(context: android.content.Context, id: String): Boolean {
+        if (SidebarQuickSlotConfig.isApp(id)) {
+            val pkg = SidebarQuickSlotConfig.packageOf(id)
+            val intent = runCatching { context.packageManager.getLaunchIntentForPackage(pkg) }.getOrNull()
+                ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (intent == null) {
+                Log.w(TAG, "launch app unavailable: $pkg")
+                return true
+            }
+            runCatching { context.startActivity(intent) }
+                .onFailure { Log.w(TAG, "launch app failed: $pkg", it) }
+            return true
+        }
         if (id == "hyperisland_motion_photo" || id == "hyperisland_screen_record") {
             Log.i(TAG, "HyperIsland shortcut clicked: $id context=${context.packageName}")
             runCatching { ConfigManager.module()?.log(Log.INFO, TAG, "HyperIsland shortcut clicked: $id") }
@@ -1817,6 +1833,35 @@ internal object SidebarShortcutController {
         }
         sendQsBridgeClick(context, null, systemTileSpec(id))
         return true
+    }
+
+    /**
+     * 两列模式下「速记旁那一格」的图标。规则与 [bindInjectedIcon] 保持一致：
+     * 应用取应用图标，快速启动依次取自定义图标 / 活动图标 / 内置 URL 图标，
+     * 内置快捷方式依次取自定义图标 / 磁贴图标 / 系统磁贴图标。
+     */
+    internal fun slotIcon(context: android.content.Context, id: String): Drawable? {
+        if (id.isBlank()) return null
+        if (SidebarQuickSlotConfig.isApp(id)) {
+            return runCatching { context.packageManager.getApplicationIcon(SidebarQuickSlotConfig.packageOf(id)) }
+                .getOrNull()
+        }
+        if (QuickLaunchFormat.isQuickLaunch(id)) {
+            val payload = quickLaunchPayload(id)
+            val entryId = QuickLaunchFormat.shortcutEntryId(id)
+            val customUri = entryId?.let { eid ->
+                ConfigManager.getStringSet(PrefKeys.QUICK_FUNCTIONS_ICON_URIS, emptySet())
+                    .firstOrNull { it.startsWith("$eid=") }
+                    ?.substringAfter('=')
+            }
+            if (QuickLaunchFormat.isUrl(payload)) {
+                return loadIconUri(context, customUri) ?: moduleDrawable(context, URL_ICON_RES)
+            }
+            return loadIconUri(context, customUri) ?: loadActivityDrawable(context, payload)
+        }
+        return loadIconUri(context, customIconUri(id))
+            ?: loadInjectedDrawable(context, id)
+            ?: loadSystemDrawable(context, id)
     }
 
     private fun sendQsBridgeClick(context: android.content.Context, component: String?, spec: String?) {

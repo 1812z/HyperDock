@@ -25,6 +25,14 @@ object PrefKeys {
     const val SIDEBAR_EXPAND_ALL_APPS = "sidebar_expand_all_apps"
     const val SIDEBAR_PANEL_CACHE = "sidebar_panel_cache"
     const val SIDEBAR_STAGGERED_EXPAND = "sidebar_staggered_expand"
+    /** 侧边栏两列。与 [SIDEBAR_EXPAND_ALL_APPS] 互斥，见 SidebarBehaviorPage。 */
+    const val SIDEBAR_TWO_COLUMNS = "sidebar_two_columns"
+    /**
+     * 两列模式下「速记」旁边那一格放什么。值为条目 id：
+     * `app:<包名>` / 快速启动 id（`activity:...`） / 内置快捷方式 id（目录 id 或 `pkg/cls`）。
+     * 空串 = 不留这一格（此时速记跨两列居中）。
+     */
+    const val SIDEBAR_QUICK_SLOT = "sidebar_quick_slot"
     const val ALL_APPS_CUSTOM_ENABLED = "all_apps_custom_enabled"
     const val ALL_APPS_CUSTOM_MODE = "all_apps_custom_mode"
     const val ALL_APPS_CUSTOM_PACKAGES = "all_apps_custom_packages"
@@ -70,7 +78,14 @@ object PrefKeys {
     const val EMPTY_SET_MARKER = "__hyperdock_empty_set__"
 
     /** 需要放入 core 组、供 Hook 进程最先读取的键。 */
-    val CORE = setOf(DEBUG_LOG, SIDEBAR_EXPAND_ALL_APPS, SIDEBAR_PANEL_CACHE, SIDEBAR_STAGGERED_EXPAND)
+    val CORE = setOf(
+        DEBUG_LOG,
+        SIDEBAR_EXPAND_ALL_APPS,
+        SIDEBAR_PANEL_CACHE,
+        SIDEBAR_STAGGERED_EXPAND,
+        SIDEBAR_TWO_COLUMNS,
+        SIDEBAR_QUICK_SLOT,
+    )
 
     /** 需要同步到 Hook 进程、并参与导入导出的业务配置键。 */
     val SYNCED = setOf(
@@ -87,6 +102,8 @@ object PrefKeys {
         SIDEBAR_EXPAND_ALL_APPS,
         SIDEBAR_PANEL_CACHE,
         SIDEBAR_STAGGERED_EXPAND,
+        SIDEBAR_TWO_COLUMNS,
+        SIDEBAR_QUICK_SLOT,
         ALL_APPS_CUSTOM_ENABLED,
         ALL_APPS_CUSTOM_MODE,
         ALL_APPS_CUSTOM_PACKAGES,
