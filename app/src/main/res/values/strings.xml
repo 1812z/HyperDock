@@ -69,11 +69,11 @@
     <string name="shortcuts">Shortcuts</string>
     <string name="shortcuts_summary">Show custom shortcuts in the all-apps panel and dock</string>
     <string name="sidebar_auto_close">Auto-collapse after tap</string>
-    <string name="sidebar_auto_close_summary">Which injected entries collapse the sidebar after being tapped. Opening an app always collapses it and toggle tiles (Wi-Fi, Bluetooth…) never do, both matching the native sidebar.</string>
+    <string name="sidebar_auto_close_summary">Which injected entries collapse the sidebar after being tapped.</string>
     <string name="sidebar_auto_close_off">Never</string>
     <string name="sidebar_auto_close_shortcuts">Built-in shortcuts only</string>
     <string name="sidebar_auto_close_quick_launch">Quick launch only</string>
-    <string name="sidebar_auto_close_all">Every scenario (default)</string>
+    <string name="sidebar_auto_close_all">Every scenario</string>
     <string name="shortcut_custom_style">Custom style</string>
     <string name="shortcut_custom_style_summary">Customize the background and icon colors for the off and on states</string>
     <string name="shortcut_style_background_off">Off-state background</string>
