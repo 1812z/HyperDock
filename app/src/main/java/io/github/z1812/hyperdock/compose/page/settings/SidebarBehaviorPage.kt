@@ -30,8 +30,10 @@ import androidx.compose.ui.unit.dp
 import io.github.z1812.hyperdock.PrefKeys
 import io.github.z1812.hyperdock.R
 import io.github.z1812.hyperdock.compose.component.DetailPage
+import io.github.z1812.hyperdock.compose.component.PreferenceDropdown
 import io.github.z1812.hyperdock.compose.component.PreferenceSwitch
 import io.github.z1812.hyperdock.compose.component.SectionTitle
+import io.github.z1812.hyperdock.compose.component.SettingsActionWithArrow
 import io.github.z1812.hyperdock.compose.data.PrefsRepository
 import io.github.z1812.hyperdock.compose.data.rememberBooleanPreference
 import io.github.z1812.hyperdock.compose.data.rememberStringPreference
@@ -45,12 +47,27 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.icon.extended.Back
 
 @Composable
-internal fun SidebarBehaviorPage(prefs: PrefsRepository, onBack: () -> Unit) {
+internal fun SidebarBehaviorPage(
+    prefs: PrefsRepository,
+    onBack: () -> Unit,
+    onOpenQuickSlot: () -> Unit,
+) {
+    val quickSlotLabel = rememberQuickSlotLabel(prefs)
     val expandAllApps = rememberBooleanPreference(prefs, PrefKeys.SIDEBAR_EXPAND_ALL_APPS, false)
+    val twoColumns = rememberBooleanPreference(prefs, PrefKeys.SIDEBAR_TWO_COLUMNS, false)
     val panelCache = rememberBooleanPreference(prefs, PrefKeys.SIDEBAR_PANEL_CACHE, false)
     val staggeredExpand = rememberBooleanPreference(prefs, PrefKeys.SIDEBAR_STAGGERED_EXPAND, false)
     val shortcutsEnabled = rememberBooleanPreference(prefs, PrefKeys.SHORTCUTS_ENABLED, false)
     val quickActionsEnabled = rememberBooleanPreference(prefs, PrefKeys.QUICK_FUNCTIONS_ENABLED, false)
+    val autoCloseMode = rememberStringPreference(prefs, PrefKeys.SIDEBAR_AUTO_CLOSE_MODE, PrefKeys.AUTO_CLOSE_ALL)
+    val autoCloseLabels = remember {
+        listOf(
+            PrefKeys.AUTO_CLOSE_OFF to R.string.sidebar_auto_close_off,
+            PrefKeys.AUTO_CLOSE_SHORTCUTS to R.string.sidebar_auto_close_shortcuts,
+            PrefKeys.AUTO_CLOSE_QUICK_LAUNCH to R.string.sidebar_auto_close_quick_launch,
+            PrefKeys.AUTO_CLOSE_ALL to R.string.sidebar_auto_close_all,
+        )
+    }
     val visible = rememberStringSetPreference(prefs, PrefKeys.SIDEBAR_SECTION_VISIBILITY)
     val order = rememberStringPreference(prefs, PrefKeys.SIDEBAR_SECTION_ORDER, DEFAULT_SECTION_ORDER)
     val labels = remember {
@@ -73,6 +90,26 @@ internal fun SidebarBehaviorPage(prefs: PrefsRepository, onBack: () -> Unit) {
         val ids = labels.map { it.first }
         (order.value.split(',').map(String::trim) + DEFAULT_SECTION_ORDER.split(','))
             .distinct().filter { it in ids && it in enabledSections }
+    }
+
+    // 「两列」与「自动展开面板」互斥：打开其中一个，另一个必须同时关掉。
+    // Hook 侧按读取到的配置决定列数，两个开关同时为真会让面板状态不确定。
+    fun setTwoColumns(checked: Boolean) {
+        twoColumns.value = checked
+        prefs.putBoolean(PrefKeys.SIDEBAR_TWO_COLUMNS, checked)
+        if (checked && expandAllApps.value) {
+            expandAllApps.value = false
+            prefs.putBoolean(PrefKeys.SIDEBAR_EXPAND_ALL_APPS, false)
+        }
+    }
+
+    fun setExpandAllApps(checked: Boolean) {
+        expandAllApps.value = checked
+        prefs.putBoolean(PrefKeys.SIDEBAR_EXPAND_ALL_APPS, checked)
+        if (checked && twoColumns.value) {
+            twoColumns.value = false
+            prefs.putBoolean(PrefKeys.SIDEBAR_TWO_COLUMNS, false)
+        }
     }
 
     fun setVisible(id: String, checked: Boolean) {
@@ -101,7 +138,38 @@ internal fun SidebarBehaviorPage(prefs: PrefsRepository, onBack: () -> Unit) {
         item {
             SectionTitle(stringResource(R.string.sidebar_behavior))
             Card(modifier = Modifier.fillMaxWidth()) {
-                PreferenceSwitch(stringResource(R.string.sidebar_expand_all_apps), stringResource(R.string.sidebar_expand_all_apps_summary), null, expandAllApps.value) { expandAllApps.value = it; prefs.putBoolean(PrefKeys.SIDEBAR_EXPAND_ALL_APPS, it) }
+                PreferenceSwitch(
+                    stringResource(R.string.sidebar_two_columns),
+                    if (expandAllApps.value) stringResource(R.string.sidebar_two_columns_conflict)
+                    else stringResource(R.string.sidebar_two_columns_summary),
+                    null,
+                    twoColumns.value,
+                ) { setTwoColumns(it) }
+                // 两列打开时才出现：这一格只在速记旁边占半个格子。
+                AnimatedVisibility(
+                    visible = twoColumns.value,
+                    enter = expandVertically(
+                        animationSpec = tween(280, easing = FastOutSlowInEasing),
+                        expandFrom = Alignment.Top,
+                    ) + fadeIn(tween(180)),
+                    exit = shrinkVertically(
+                        animationSpec = tween(220, easing = FastOutSlowInEasing),
+                        shrinkTowards = Alignment.Top,
+                    ) + fadeOut(tween(140)),
+                ) {
+                    SettingsActionWithArrow(
+                        title = stringResource(R.string.sidebar_quick_slot),
+                        summary = stringResource(R.string.sidebar_quick_slot_current, quickSlotLabel.value),
+                        onClick = onOpenQuickSlot,
+                    )
+                }
+                PreferenceSwitch(
+                    stringResource(R.string.sidebar_expand_all_apps),
+                    if (twoColumns.value) stringResource(R.string.sidebar_two_columns_conflict)
+                    else stringResource(R.string.sidebar_expand_all_apps_summary),
+                    null,
+                    expandAllApps.value,
+                ) { setExpandAllApps(it) }
                 PreferenceSwitch(stringResource(R.string.sidebar_panel_cache), stringResource(R.string.sidebar_panel_cache_summary), null, panelCache.value) { panelCache.value = it; prefs.putBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, it) }
                 AnimatedVisibility(
                     visible = expandAllApps.value && panelCache.value,
@@ -129,6 +197,18 @@ internal fun SidebarBehaviorPage(prefs: PrefsRepository, onBack: () -> Unit) {
                         staggeredExpand.value = it
                         prefs.putBoolean(PrefKeys.SIDEBAR_STAGGERED_EXPAND, it)
                     }
+                }
+                PreferenceDropdown(
+                    title = stringResource(R.string.sidebar_auto_close),
+                    summary = stringResource(R.string.sidebar_auto_close_summary),
+                    icon = null,
+                    items = autoCloseLabels.map { stringResource(it.second) },
+                    selectedIndex = autoCloseLabels.indexOfFirst { it.first == autoCloseMode.value }
+                        .takeIf { it >= 0 } ?: PrefKeys.AUTO_CLOSE_MODES.indexOf(PrefKeys.AUTO_CLOSE_ALL),
+                ) { index ->
+                    val next = autoCloseLabels.getOrNull(index)?.first ?: PrefKeys.AUTO_CLOSE_ALL
+                    autoCloseMode.value = next
+                    prefs.putString(PrefKeys.SIDEBAR_AUTO_CLOSE_MODE, next)
                 }
             }
         }

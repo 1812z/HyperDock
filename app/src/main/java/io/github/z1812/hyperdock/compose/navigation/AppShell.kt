@@ -69,6 +69,7 @@ import io.github.z1812.hyperdock.compose.page.settings.CustomAppsPage
 import io.github.z1812.hyperdock.compose.page.settings.QuickActivitiesPickerPage
 import io.github.z1812.hyperdock.compose.page.settings.QuickAppsPickerPage
 import io.github.z1812.hyperdock.compose.page.settings.QuickFunctionsPage
+import io.github.z1812.hyperdock.compose.page.settings.QuickSlotPage
 import io.github.z1812.hyperdock.compose.page.settings.ShortcutPage
 import io.github.z1812.hyperdock.compose.page.settings.ThemeSettingsPage
 import io.github.z1812.hyperdock.compose.service.UpdateService
@@ -128,11 +129,13 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
     var customAppsShown by remember { mutableStateOf(false) }
     var quickAppsShown by remember { mutableStateOf(false) }
     var quickActivitiesShown by remember { mutableStateOf(false) }
+    var quickSlotShown by remember { mutableStateOf(false) }
     var quickPickerApp by remember { mutableStateOf<Pair<String, String>?>(null) }
     val detailNavigationState = rememberPredictiveNavigationLayerState()
     val customAppsNavigationState = rememberPredictiveNavigationLayerState()
     val quickAppsNavigationState = rememberPredictiveNavigationLayerState()
     val quickActivitiesNavigationState = rememberPredictiveNavigationLayerState()
+    val quickSlotNavigationState = rememberPredictiveNavigationLayerState()
     var detailBackgroundState by remember {
         mutableStateOf<PredictiveNavigationLayerState>(customAppsNavigationState)
     }
@@ -234,6 +237,7 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
         customAppsShown = false
         quickActivitiesShown = false
         quickAppsShown = false
+        quickSlotShown = false
         detailShown = false
     }
 
@@ -255,7 +259,7 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
 
     PredictiveNavigationBackHandler(
         visible = detailShown,
-        enabled = detailShown && !customAppsShown && !quickAppsShown && !quickActivitiesShown,
+        enabled = detailShown && !customAppsShown && !quickAppsShown && !quickActivitiesShown && !quickSlotShown,
         state = detailNavigationState,
         maxTranslationPercent = predictiveBackMaxTranslation.value,
         onDismiss = { detailShown = false },
@@ -289,6 +293,14 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
         state = quickActivitiesNavigationState,
         maxTranslationPercent = predictiveBackMaxTranslation.value,
         onDismiss = { quickActivitiesShown = false },
+    )
+
+    PredictiveNavigationBackHandler(
+        visible = quickSlotShown,
+        enabled = quickSlotShown,
+        state = quickSlotNavigationState,
+        maxTranslationPercent = predictiveBackMaxTranslation.value,
+        onDismiss = { quickSlotShown = false },
     )
 
     BarBlurHost(
@@ -371,8 +383,17 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
                                         detailBackgroundState = customAppsNavigationState
                                     },
                                 )
-                                SettingsDetail.SidebarBehavior -> SidebarBehaviorPage(prefs, ::closeDetail)
-                                null -> SidebarBehaviorPage(prefs, ::closeDetail)
+                                SettingsDetail.SidebarBehavior -> SidebarBehaviorPage(
+                                    prefs,
+                                    ::closeDetail,
+                                ) {
+                                    quickSlotShown = true
+                                    detailBackgroundState = quickSlotNavigationState
+                                }
+                                null -> SidebarBehaviorPage(prefs, ::closeDetail) {
+                                    quickSlotShown = true
+                                    detailBackgroundState = quickSlotNavigationState
+                                }
                                 SettingsDetail.Shortcuts -> ShortcutPage(prefs, ::closeDetail)
                                 SettingsDetail.QuickFunctions -> QuickFunctionsPage(
                                     prefs = prefs,
@@ -407,6 +428,28 @@ internal fun HyperDockAppRoot(prefs: PrefsRepository) {
                                 CustomAppsPage(
                                     prefs = prefs,
                                     onBack = { customAppsShown = false },
+                                )
+                            }
+                        }
+                    }
+
+                    PredictiveNavigationBackdrop(
+                        state = quickSlotNavigationState,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
+                    BarBlurHost(
+                        enabled = blurBars.value,
+                    ) {
+                        BarBackdropContent(modifier = Modifier.fillMaxSize()) {
+                            PredictiveNavigationLayer(
+                                visible = quickSlotShown,
+                                state = quickSlotNavigationState,
+                                maxTranslationPercent = predictiveBackMaxTranslation.value,
+                            ) {
+                                QuickSlotPage(
+                                    prefs = prefs,
+                                    onBack = { quickSlotShown = false },
                                 )
                             }
                         }

@@ -25,6 +25,28 @@ object PrefKeys {
     const val SIDEBAR_EXPAND_ALL_APPS = "sidebar_expand_all_apps"
     const val SIDEBAR_PANEL_CACHE = "sidebar_panel_cache"
     const val SIDEBAR_STAGGERED_EXPAND = "sidebar_staggered_expand"
+    /** 侧边栏两列。与 [SIDEBAR_EXPAND_ALL_APPS] 互斥，见 SidebarBehaviorPage。 */
+    const val SIDEBAR_TWO_COLUMNS = "sidebar_two_columns"
+    /**
+     * 两列模式下「速记」旁边那一格放什么。值为条目 id：
+     * `app:<包名>` / 快速启动 id（`activity:...`） / 内置快捷方式 id（目录 id 或 `pkg/cls`）。
+     * 空串 = 不留这一格（此时速记跨两列居中）。
+     */
+    const val SIDEBAR_QUICK_SLOT = "sidebar_quick_slot"
+    /**
+     * 点击模块注入的条目（速记旁那一格 / 全部应用面板里的快捷方式 / 快速启动）
+     * 之后是否自动收起侧边栏。取值见 [AUTO_CLOSE_MODES]：
+     * `off` / `shortcuts` / `quick_launch` / `all`。默认 `all`（对齐原生：
+     * 原生点应用必然收起侧边栏）。开关类磁贴无论取哪个值都保持展开。
+     */
+    const val SIDEBAR_AUTO_CLOSE_MODE = "sidebar_auto_close_mode"
+
+    /** [SIDEBAR_AUTO_CLOSE_MODE] 的合法取值，顺序与设置页下拉项一致。 */
+    val AUTO_CLOSE_MODES = listOf(AUTO_CLOSE_OFF, AUTO_CLOSE_SHORTCUTS, AUTO_CLOSE_QUICK_LAUNCH, AUTO_CLOSE_ALL)
+    const val AUTO_CLOSE_OFF = "off"
+    const val AUTO_CLOSE_SHORTCUTS = "shortcuts"
+    const val AUTO_CLOSE_QUICK_LAUNCH = "quick_launch"
+    const val AUTO_CLOSE_ALL = "all"
     const val ALL_APPS_CUSTOM_ENABLED = "all_apps_custom_enabled"
     const val ALL_APPS_CUSTOM_MODE = "all_apps_custom_mode"
     const val ALL_APPS_CUSTOM_PACKAGES = "all_apps_custom_packages"
@@ -33,7 +55,6 @@ object PrefKeys {
     const val SHORTCUTS_ENABLED = "shortcuts_enabled"
     const val SHORTCUTS_ADDED = "shortcuts_added"
     const val SHORTCUTS_ORDER = "shortcuts_order"
-    const val SHORTCUTS_AUTO_CLOSE = "shortcuts_auto_close"
     const val SHORTCUTS_CUSTOM_LABELS = "shortcuts_custom_labels"
     const val SHORTCUTS_CUSTOM_ICON_URIS = "shortcuts_custom_icon_uris"
     const val SHORTCUTS_COLOR_ICONS = "shortcuts_color_icons"
@@ -70,7 +91,15 @@ object PrefKeys {
     const val EMPTY_SET_MARKER = "__hyperdock_empty_set__"
 
     /** 需要放入 core 组、供 Hook 进程最先读取的键。 */
-    val CORE = setOf(DEBUG_LOG, SIDEBAR_EXPAND_ALL_APPS, SIDEBAR_PANEL_CACHE, SIDEBAR_STAGGERED_EXPAND)
+    val CORE = setOf(
+        DEBUG_LOG,
+        SIDEBAR_EXPAND_ALL_APPS,
+        SIDEBAR_PANEL_CACHE,
+        SIDEBAR_STAGGERED_EXPAND,
+        SIDEBAR_TWO_COLUMNS,
+        SIDEBAR_QUICK_SLOT,
+        SIDEBAR_AUTO_CLOSE_MODE,
+    )
 
     /** 需要同步到 Hook 进程、并参与导入导出的业务配置键。 */
     val SYNCED = setOf(
@@ -87,13 +116,15 @@ object PrefKeys {
         SIDEBAR_EXPAND_ALL_APPS,
         SIDEBAR_PANEL_CACHE,
         SIDEBAR_STAGGERED_EXPAND,
+        SIDEBAR_TWO_COLUMNS,
+        SIDEBAR_QUICK_SLOT,
+        SIDEBAR_AUTO_CLOSE_MODE,
         ALL_APPS_CUSTOM_ENABLED,
         ALL_APPS_CUSTOM_MODE,
         ALL_APPS_CUSTOM_PACKAGES,
         SHORTCUTS_ENABLED,
         SHORTCUTS_ADDED,
         SHORTCUTS_ORDER,
-        SHORTCUTS_AUTO_CLOSE,
         SHORTCUTS_CUSTOM_LABELS,
         SHORTCUTS_CUSTOM_ICON_URIS,
         SHORTCUTS_COLOR_ICONS,

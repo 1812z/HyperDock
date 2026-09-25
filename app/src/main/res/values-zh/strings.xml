@@ -41,6 +41,17 @@
     <string name="sidebar_staggered_expand">错位展开</string>
     <string name="sidebar_staggered_expand_summary">全部应用面板以独立动画展开，与侧边栏形成错位效果</string>
     <string name="sidebar_panel_cache_summary">保留已初始化面板，加快后续打开速度</string>
+    <string name="sidebar_two_columns">侧边栏两列</string>
+    <string name="sidebar_two_columns_summary">侧边栏应用图标以两列排布；展开全部应用面板时自动缩回一列</string>
+    <string name="sidebar_two_columns_conflict">两者互斥：开启其中一个会自动关闭另一个</string>
+    <string name="sidebar_quick_slot">速记旁的图标</string>
+    <string name="sidebar_quick_slot_summary">未设置时速记单独占一行并居中</string>
+    <string name="sidebar_quick_slot_none">未设置</string>
+    <string name="sidebar_quick_slot_current">当前：%1$s</string>
+    <string name="sidebar_quick_slot_group_apps">应用</string>
+    <string name="sidebar_quick_slot_group_shortcuts">内置快捷方式</string>
+    <string name="sidebar_quick_slot_group_quick_launch">快速启动</string>
+    <string name="sidebar_quick_slot_empty">暂无可选内容</string>
     <string name="all_apps">全部应用</string>
     <string name="all_apps_custom_enabled">启用自定义全部应用</string>
     <string name="all_apps_custom_enabled_summary">选择全部应用面板中显示或隐藏的应用</string>
@@ -54,8 +65,12 @@
 
     <string name="shortcuts">快捷方式</string>
     <string name="shortcuts_summary">在全部应用面板与侧边栏展示自定义快捷方式</string>
-    <string name="shortcut_auto_close">自动关闭侧边栏</string>
-    <string name="shortcut_auto_close_summary">点击快捷方式后自动收起侧边栏</string>
+    <string name="sidebar_auto_close">点击后自动收起侧边栏</string>
+    <string name="sidebar_auto_close_summary">选择哪些条目点击后自动收起侧边栏</string>
+    <string name="sidebar_auto_close_off">不自动收起</string>
+    <string name="sidebar_auto_close_shortcuts">仅内置快捷方式</string>
+    <string name="sidebar_auto_close_quick_launch">仅快速启动</string>
+    <string name="sidebar_auto_close_all">所有场景</string>
     <string name="shortcut_custom_style">样式自定义</string>
     <string name="shortcut_custom_style_summary">自定义快捷方式在关闭与开启状态下的背景和图标颜色</string>
     <string name="shortcut_style_background_off">关闭状态背景</string>

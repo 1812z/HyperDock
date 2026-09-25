@@ -43,6 +43,17 @@
     <string name="sidebar_staggered_expand">Staggered expansion</string>
     <string name="sidebar_staggered_expand_summary">Animate the all-apps panel separately for a staggered effect with the sidebar</string>
     <string name="sidebar_panel_cache_summary">Keep the initialized panel for faster subsequent openings</string>
+    <string name="sidebar_two_columns">Two-column sidebar</string>
+    <string name="sidebar_two_columns_summary">Lay the sidebar apps out in two columns; the sidebar falls back to one column while the all-apps panel is open</string>
+    <string name="sidebar_two_columns_conflict">Mutually exclusive: enabling one turns the other off</string>
+    <string name="sidebar_quick_slot">Icon next to quick capture</string>
+    <string name="sidebar_quick_slot_summary">Not set — quick capture is centered on its own row</string>
+    <string name="sidebar_quick_slot_none">Not set</string>
+    <string name="sidebar_quick_slot_current">Current: %1$s</string>
+    <string name="sidebar_quick_slot_group_apps">Apps</string>
+    <string name="sidebar_quick_slot_group_shortcuts">Built-in shortcuts</string>
+    <string name="sidebar_quick_slot_group_quick_launch">Quick launch</string>
+    <string name="sidebar_quick_slot_empty">Nothing available yet</string>
     <string name="all_apps">All apps</string>
     <string name="all_apps_custom_enabled">Use custom app list</string>
     <string name="all_apps_custom_enabled_summary">Choose which apps are shown in the all-apps panel</string>
@@ -57,8 +68,12 @@
     <!-- Shortcuts -->
     <string name="shortcuts">Shortcuts</string>
     <string name="shortcuts_summary">Show custom shortcuts in the all-apps panel and dock</string>
-    <string name="shortcut_auto_close">Auto-close sidebar</string>
-    <string name="shortcut_auto_close_summary">Collapse the sidebar automatically after tapping a shortcut</string>
+    <string name="sidebar_auto_close">Auto-collapse after tap</string>
+    <string name="sidebar_auto_close_summary">Which injected entries collapse the sidebar after being tapped.</string>
+    <string name="sidebar_auto_close_off">Never</string>
+    <string name="sidebar_auto_close_shortcuts">Built-in shortcuts only</string>
+    <string name="sidebar_auto_close_quick_launch">Quick launch only</string>
+    <string name="sidebar_auto_close_all">Every scenario</string>
     <string name="shortcut_custom_style">Custom style</string>
     <string name="shortcut_custom_style_summary">Customize the background and icon colors for the off and on states</string>
     <string name="shortcut_style_background_off">Off-state background</string>

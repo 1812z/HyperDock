@@ -72,6 +72,11 @@ internal object SidebarShortcutController {
     /** 注入快捷方式的 QuickInfo id 前缀，避免与原生快捷方式 id 冲突。 */
     private const val ID_PREFIX = "hyperdock::"
 
+    /** 条目类别，只在「点击后是否收起侧边栏」的分流里用。 */
+    private const val CATEGORY_APP = "app"
+    private const val CATEGORY_SHORTCUT = "shortcut"
+    private const val CATEGORY_QUICK_LAUNCH = "quick_launch"
+
     /**
      * 图标归一化后的画布边长（px）。
      *
@@ -1754,8 +1759,10 @@ internal object SidebarShortcutController {
     }
 
     private fun handleInjectedModelClick(model: Any, context: android.content.Context): Boolean {
-        val handled = handleInjectedModelClickInner(model, context)
-        if (handled && ConfigManager.getBoolean(PrefKeys.SHORTCUTS_AUTO_CLOSE, false)) {
+        val quickInfo = quickInfoFromModel(model) ?: return false
+        val id = normalizeComponentId(quickInfoId(quickInfo).removePrefix(ID_PREFIX))
+        val handled = launchById(context, id)
+        if (handled && shouldAutoClose(id)) {
             if (!SidebarCloseHook.closeSidebar()) {
                 Log.w(TAG, "auto close requested but failed")
             }
@@ -1763,9 +1770,58 @@ internal object SidebarShortcutController {
         return handled
     }
 
-    private fun handleInjectedModelClickInner(model: Any, context: android.content.Context): Boolean {
-        val quickInfo = quickInfoFromModel(model) ?: return false
-        val id = normalizeComponentId(quickInfoId(quickInfo).removePrefix(ID_PREFIX))
+    /**
+     * 点击这一类条目后是否收起侧边栏。
+     *
+     * 两条常量规则，与模式取值无关：
+     * - **打开应用一定收起** —— 原生侧边栏点应用就是这么做的，属于基础行为，
+     *   不能被「仅快捷方式 / 仅快速启动」这两个模式排除掉。侧边栏自带的应用条目
+     *   本来就由宿主自己收起（我们没接管它的点击），这里说的是模块注入的 `app:` 条目。
+     * - **开关类磁贴一定不收起** —— WiFi/蓝牙这类点完原地切换，收掉很别扭；
+     *   由 [toggleableTiles] 在运行期识别。
+     *
+     * 剩下的（内置快捷方式、快速启动）才按 [PrefKeys.SIDEBAR_AUTO_CLOSE_MODE] 分流。
+     */
+    internal fun shouldAutoClose(id: String): Boolean {
+        if (id.isBlank()) return false
+        val mode = ConfigManager.getString(PrefKeys.SIDEBAR_AUTO_CLOSE_MODE, PrefKeys.AUTO_CLOSE_ALL)
+        if (mode == PrefKeys.AUTO_CLOSE_OFF) return false
+        // 开关类磁贴保持展开（点一下 WiFi 就把侧边栏收掉会很别扭）。
+        if (toggleableTiles.contains(id)) return false
+        val category = entryCategory(id)
+        // 应用：始终收起，不受模式限制。
+        if (category == CATEGORY_APP) return true
+        return when (mode) {
+            PrefKeys.AUTO_CLOSE_ALL -> true
+            PrefKeys.AUTO_CLOSE_SHORTCUTS -> category == CATEGORY_SHORTCUT
+            PrefKeys.AUTO_CLOSE_QUICK_LAUNCH -> category == CATEGORY_QUICK_LAUNCH
+            else -> false
+        }
+    }
+
+    private fun entryCategory(id: String): String = when {
+        SidebarQuickSlotConfig.isApp(id) -> CATEGORY_APP
+        QuickLaunchFormat.isQuickLaunch(id) -> CATEGORY_QUICK_LAUNCH
+        else -> CATEGORY_SHORTCUT
+    }
+
+    /**
+     * 按条目 id 启动。既服务于注入到「全部应用」面板的快捷方式，也服务于两列模式下
+     * 速记旁那一格（[SidebarDockSlotHook]），两者共用同一套分流规则。
+     */
+    internal fun launchById(context: android.content.Context, id: String): Boolean {
+        if (SidebarQuickSlotConfig.isApp(id)) {
+            val pkg = SidebarQuickSlotConfig.packageOf(id)
+            val intent = runCatching { context.packageManager.getLaunchIntentForPackage(pkg) }.getOrNull()
+                ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (intent == null) {
+                Log.w(TAG, "launch app unavailable: $pkg")
+                return true
+            }
+            runCatching { context.startActivity(intent) }
+                .onFailure { Log.w(TAG, "launch app failed: $pkg", it) }
+            return true
+        }
         if (id == "hyperisland_motion_photo" || id == "hyperisland_screen_record") {
             Log.i(TAG, "HyperIsland shortcut clicked: $id context=${context.packageName}")
             runCatching { ConfigManager.module()?.log(Log.INFO, TAG, "HyperIsland shortcut clicked: $id") }
@@ -1817,6 +1873,35 @@ internal object SidebarShortcutController {
         }
         sendQsBridgeClick(context, null, systemTileSpec(id))
         return true
+    }
+
+    /**
+     * 两列模式下「速记旁那一格」的图标。规则与 [bindInjectedIcon] 保持一致：
+     * 应用取应用图标，快速启动依次取自定义图标 / 活动图标 / 内置 URL 图标，
+     * 内置快捷方式依次取自定义图标 / 磁贴图标 / 系统磁贴图标。
+     */
+    internal fun slotIcon(context: android.content.Context, id: String): Drawable? {
+        if (id.isBlank()) return null
+        if (SidebarQuickSlotConfig.isApp(id)) {
+            return runCatching { context.packageManager.getApplicationIcon(SidebarQuickSlotConfig.packageOf(id)) }
+                .getOrNull()
+        }
+        if (QuickLaunchFormat.isQuickLaunch(id)) {
+            val payload = quickLaunchPayload(id)
+            val entryId = QuickLaunchFormat.shortcutEntryId(id)
+            val customUri = entryId?.let { eid ->
+                ConfigManager.getStringSet(PrefKeys.QUICK_FUNCTIONS_ICON_URIS, emptySet())
+                    .firstOrNull { it.startsWith("$eid=") }
+                    ?.substringAfter('=')
+            }
+            if (QuickLaunchFormat.isUrl(payload)) {
+                return loadIconUri(context, customUri) ?: moduleDrawable(context, URL_ICON_RES)
+            }
+            return loadIconUri(context, customUri) ?: loadActivityDrawable(context, payload)
+        }
+        return loadIconUri(context, customIconUri(id))
+            ?: loadInjectedDrawable(context, id)
+            ?: loadSystemDrawable(context, id)
     }
 
     private fun sendQsBridgeClick(context: android.content.Context, component: String?, spec: String?) {
