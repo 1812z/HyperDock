@@ -60,6 +60,7 @@ internal fun SidebarBehaviorPage(
     val shortcutsEnabled = rememberBooleanPreference(prefs, PrefKeys.SHORTCUTS_ENABLED, false)
     val quickActionsEnabled = rememberBooleanPreference(prefs, PrefKeys.QUICK_FUNCTIONS_ENABLED, false)
     val autoCloseMode = rememberStringPreference(prefs, PrefKeys.SIDEBAR_AUTO_CLOSE_MODE, PrefKeys.AUTO_CLOSE_ALL)
+    val darkSync = rememberBooleanPreference(prefs, PrefKeys.SIDEBAR_ALL_APPS_DARK_SYNC, false)
     val autoCloseLabels = remember {
         listOf(
             PrefKeys.AUTO_CLOSE_OFF to R.string.sidebar_auto_close_off,
@@ -210,6 +211,12 @@ internal fun SidebarBehaviorPage(
                     autoCloseMode.value = next
                     prefs.putString(PrefKeys.SIDEBAR_AUTO_CLOSE_MODE, next)
                 }
+                PreferenceSwitch(
+                    stringResource(R.string.sidebar_all_apps_dark_sync),
+                    stringResource(R.string.sidebar_all_apps_dark_sync_summary),
+                    null,
+                    darkSync.value,
+                ) { darkSync.value = it; prefs.putBoolean(PrefKeys.SIDEBAR_ALL_APPS_DARK_SYNC, it) }
             }
         }
         item {

@@ -42,7 +42,7 @@
     <string name="sidebar_staggered_expand_summary">全部应用面板以独立动画展开，与侧边栏形成错位效果</string>
     <string name="sidebar_panel_cache_summary">保留已初始化面板，加快后续打开速度</string>
     <string name="sidebar_two_columns">侧边栏两列</string>
-    <string name="sidebar_two_columns_summary">侧边栏应用图标以两列排布；展开全部应用面板时自动缩回一列</string>
+    <string name="sidebar_two_columns_summary">侧边栏应用图标以两列排布；竖屏下展开全部应用面板时自动缩回一列，横屏保持两列</string>
     <string name="sidebar_two_columns_conflict">两者互斥：开启其中一个会自动关闭另一个</string>
     <string name="sidebar_quick_slot">速记旁的图标</string>
     <string name="sidebar_quick_slot_summary">未设置时速记单独占一行并居中</string>
@@ -66,6 +66,8 @@
     <string name="shortcuts">快捷方式</string>
     <string name="shortcuts_summary">在全部应用面板与侧边栏展示自定义快捷方式</string>
     <string name="sidebar_auto_close">点击后自动收起侧边栏</string>
+    <string name="sidebar_all_apps_dark_sync">侧边栏深色时同步全部应用面板</string>
+    <string name="sidebar_all_apps_dark_sync_summary">打开游戏工具箱、视频工具箱等使侧边栏变深时，全部应用面板也以深色构建，效果与系统进入深色模式完全一致。面板打开时生效。</string>
     <string name="sidebar_auto_close_summary">选择哪些条目点击后自动收起侧边栏</string>
     <string name="sidebar_auto_close_off">不自动收起</string>
     <string name="sidebar_auto_close_shortcuts">仅内置快捷方式</string>
