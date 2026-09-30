@@ -37,11 +37,11 @@ object ConfigManager {
     @Synchronized
     fun init(module: XposedModule) {
         if (initialized) return
+        this.module = module
         try {
             val prefs = module.getRemotePreferences(PREFS_CORE)
             prefs.registerOnSharedPreferenceChangeListener(prefsListener)
             corePrefs = prefs
-            this.module = module
             initialized = true
             module.log("$TAG: remote prefs '$PREFS_CORE' loaded")
             notifyListeners()

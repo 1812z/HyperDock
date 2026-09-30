@@ -1,7 +1,7 @@
 package io.github.z1812.hyperdock.xposed.hook.Sidebar
 
 import android.app.Application
-import android.util.Log
+import io.github.z1812.hyperdock.xposed.LogUtil as Log
 import io.github.z1812.hyperdock.xposed.hook.BaseHook
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam

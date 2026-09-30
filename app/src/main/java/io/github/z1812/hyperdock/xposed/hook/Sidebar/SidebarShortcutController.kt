@@ -14,7 +14,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
+import io.github.z1812.hyperdock.xposed.LogUtil as Log
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
@@ -198,15 +198,15 @@ internal object SidebarShortcutController {
     @Volatile private var cachedNativeModels: List<Any>? = null
 
     private fun log(module: XposedModule, message: String) {
-        if (ConfigManager.isDebugLogEnabled()) module.log(Log.DEBUG, TAG, message)
+        Log.log(module, Log.DEBUG, TAG, message)
     }
 
     private fun logWarn(module: XposedModule, message: String) {
-        module.log(Log.WARN, TAG, message)
+        Log.log(module, Log.WARN, TAG, message)
     }
 
     private fun logError(module: XposedModule, message: String) {
-        module.log(Log.ERROR, TAG, message)
+        Log.log(module, Log.ERROR, TAG, message)
     }
 
     fun onInit(module: XposedModule, param: PackageLoadedParam) {
@@ -1824,7 +1824,6 @@ internal object SidebarShortcutController {
         }
         if (id == "hyperisland_motion_photo" || id == "hyperisland_screen_record") {
             Log.i(TAG, "HyperIsland shortcut clicked: $id context=${context.packageName}")
-            runCatching { ConfigManager.module()?.log(Log.INFO, TAG, "HyperIsland shortcut clicked: $id") }
             // 客户端内部已捕获常规失败；外层再兜底，避免异常击穿安全中心进程。
             runCatching { HyperIslandScreenRecorderClient.start(context, id == "hyperisland_motion_photo") }
                 .onFailure { Log.e(TAG, "HyperIsland dispatch failed", it) }

@@ -1,5 +1,7 @@
 package io.github.z1812.hyperdock.xposed.hook.Sidebar
 
+import io.github.z1812.hyperdock.xposed.LogUtil
+
 import android.app.Application
 import android.content.BroadcastReceiver
 import android.content.ComponentName
@@ -124,7 +126,7 @@ object SidebarQsBridgeHook {
                                 it.name == "getState" && it.parameterCount == 0
                             }?.invoke(tile) as? Int
                             if (component != null && state != null) {
-                                module.log(android.util.Log.DEBUG, TAG, "tile state ${component.flattenToShortString()}=$state")
+                                LogUtil.log(module, LogUtil.DEBUG, TAG, "tile state ${component.flattenToShortString()}=$state")
                                 if (state != 0) {
                                     val toggleable = isToggleable(chain.thisObject)
                                     sendStateValue(systemContext, component.flattenToString(), null,
@@ -136,7 +138,7 @@ object SidebarQsBridgeHook {
                     }
             }
         }.onFailure {
-            module.log(android.util.Log.ERROR, TAG, "init failed: ${it.message}")
+            LogUtil.log(module, LogUtil.ERROR, TAG, "init failed", it)
         }
     }
 
@@ -206,7 +208,7 @@ object SidebarQsBridgeHook {
         }
         if (catalogBuilding) return
         if (catalogAttempts >= MAX_CATALOG_ATTEMPTS) {
-            module.log(android.util.Log.WARN, TAG, "catalog build gave up after $catalogAttempts attempts")
+            LogUtil.log(module, LogUtil.WARN, TAG, "catalog build gave up after $catalogAttempts attempts")
             return
         }
         catalogAttempts++
@@ -215,7 +217,7 @@ object SidebarQsBridgeHook {
             runCatching { buildCatalog(module, hostObject) }
                 .onFailure {
                     catalogBuilding = false
-                    module.log(android.util.Log.WARN, TAG, "catalog build failed: ${it.message}")
+                    LogUtil.log(module, LogUtil.WARN, TAG, "catalog build failed", it)
                 }
         }
     }
@@ -272,15 +274,15 @@ object SidebarQsBridgeHook {
                 if (entry != null) entries.add(entry)
                 if (owned) runCatching { invokeNoArg(tile, "destroy") }
             }
-            module.log(
-                android.util.Log.INFO, TAG,
+            LogUtil.log(module,
+                LogUtil.INFO, TAG,
                 "catalog built ${entries.size}/${candidates.size}: " +
                     entries.joinToString(", ") { "${it.spec}(${it.label})" },
             )
             catalogBuilding = false
             if (entries.isEmpty()) {
                 // 一条都没探到，通常是宿主尚未就绪而非设备不支持；不落缓存，留给后续触发重试。
-                module.log(android.util.Log.WARN, TAG, "catalog empty, will retry on next host call")
+                LogUtil.log(module, LogUtil.WARN, TAG, "catalog empty, will retry on next host call")
                 return@postDelayed
             }
             catalog = entries
@@ -382,10 +384,10 @@ object SidebarQsBridgeHook {
                     // 那次广播它们没听到，这里按需重发。
                     val currentHost = host
                     if (currentHost != null) {
-                        module.log(android.util.Log.DEBUG, TAG, "catalog re-requested")
+                        LogUtil.log(module, LogUtil.DEBUG, TAG, "catalog re-requested")
                         requestCatalog(module, currentHost)
                     } else {
-                        module.log(android.util.Log.WARN, TAG, "catalog request ignored: QS host unavailable")
+                        LogUtil.log(module, LogUtil.WARN, TAG, "catalog request ignored: QS host unavailable")
                     }
                     return
                 }
@@ -398,12 +400,12 @@ object SidebarQsBridgeHook {
                 if (intent.action != ACTION_CLICK) return
                 val componentText = intent.getStringExtra(EXTRA_COMPONENT)
                 val spec = intent.getStringExtra(EXTRA_SPEC)
-                module.log(android.util.Log.DEBUG, TAG, "click request component=$componentText spec=$spec")
+                LogUtil.log(module, LogUtil.DEBUG, TAG, "click request component=$componentText spec=$spec")
                 val currentHost = host
                 if (currentHost != null) {
                     click(module, context, currentHost, componentText, spec)
                 } else {
-                    module.log(android.util.Log.WARN, TAG, "click ignored: QS host unavailable")
+                    LogUtil.log(module, LogUtil.WARN, TAG, "click ignored: QS host unavailable")
                 }
             }
         }
@@ -424,7 +426,7 @@ object SidebarQsBridgeHook {
         }.onSuccess {
             receiverInstalled = true
         }.onFailure {
-            module.log(android.util.Log.ERROR, TAG, "receiver install failed: ${it.message}")
+            LogUtil.log(module, LogUtil.ERROR, TAG, "receiver install failed", it)
         }
     }
 
@@ -434,13 +436,13 @@ object SidebarQsBridgeHook {
                 val normalizedComponent = componentText.replace("\\", "")
                 val component = ComponentName.unflattenFromString(normalizedComponent)
                     ?: run {
-                        module.log(android.util.Log.ERROR, TAG, "invalid tile component=$normalizedComponent")
+                        LogUtil.log(module, LogUtil.ERROR, TAG, "invalid tile component=$normalizedComponent")
                         return@runCatching
                     }
                 val tileSpec = "custom(${component.flattenToShortString()})"
                 val existing = findTile(hostObject, tileSpec)
                 if (existing != null) {
-                    module.log(android.util.Log.DEBUG, TAG, "click existing tile=$tileSpec")
+                    LogUtil.log(module, LogUtil.DEBUG, TAG, "click existing tile=$tileSpec")
                     ensureTileListening(existing)
                     val clickTile = hostObject.javaClass.methods.firstOrNull {
                         it.name == "clickTile" && it.parameterCount == 1 &&
@@ -449,12 +451,12 @@ object SidebarQsBridgeHook {
                     if (clickTile != null) clickTile.invoke(hostObject, component)
                     else invokeTileClick(existing)
                 } else {
-                    module.log(android.util.Log.DEBUG, TAG, "click dynamic tile=$tileSpec")
+                    LogUtil.log(module, LogUtil.DEBUG, TAG, "click dynamic tile=$tileSpec")
                     val tile = createTile(hostObject, tileSpec)
                     if (tile == null) {
-                        module.log(android.util.Log.WARN, TAG, "createTile returned null: $tileSpec")
+                        LogUtil.log(module, LogUtil.WARN, TAG, "createTile returned null: $tileSpec")
                     } else {
-                        module.log(android.util.Log.DEBUG, TAG, "created tile=${tile.javaClass.name}")
+                        LogUtil.log(module, LogUtil.DEBUG, TAG, "created tile=${tile.javaClass.name}")
                         initializeAndClickDynamic(tile)
                     }
                 }
@@ -476,7 +478,7 @@ object SidebarQsBridgeHook {
                     sendState(context, null, spec, tile)
                 }
             }
-        }.onFailure { module.log(android.util.Log.ERROR, TAG, "tile click failed: ${it.message}") }
+        }.onFailure { LogUtil.log(module, LogUtil.ERROR, TAG, "tile click failed", it) }
     }
 
     private fun findTile(hostObject: Any, spec: String): Any? = runCatching {

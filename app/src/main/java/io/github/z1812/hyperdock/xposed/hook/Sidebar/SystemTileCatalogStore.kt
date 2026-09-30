@@ -148,7 +148,7 @@ internal object SystemTileCatalogStore {
                 )
                 ?.putLong(SystemTileCatalogProtocol.KEY_BUILT_AT, SystemClock.elapsedRealtime())
                 ?.apply()
-        }.onFailure { android.util.Log.w(TAG, "persist catalog failed: ${it.message}") }
+        }.onFailure { io.github.z1812.hyperdock.xposed.LogUtil.w(TAG, "persist catalog failed", it) }
     }
 
     private fun prefs(context: Context): android.content.SharedPreferences? = runCatching {

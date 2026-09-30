@@ -11,8 +11,7 @@ import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.os.SystemClock
-import android.util.Log
-import io.github.z1812.hyperdock.xposed.ConfigManager
+import io.github.z1812.hyperdock.xposed.LogUtil as Log
 
 /**
  * HyperIsland 录屏控制客户端，协议见 docs/ScreenRecorder.md。
@@ -225,8 +224,6 @@ internal object HyperIslandScreenRecorderClient {
     }
 
     private fun report(priority: Int, message: String, error: Throwable? = null) {
-        val text = if (error != null) "$message: $error" else message
-        runCatching { Log.println(priority, TAG, text) }
-        runCatching { ConfigManager.module()?.log(priority, TAG, text) }
+        Log.log(priority, TAG, message, error)
     }
 }

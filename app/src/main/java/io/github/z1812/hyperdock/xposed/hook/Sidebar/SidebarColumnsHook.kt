@@ -3,7 +3,7 @@ package io.github.z1812.hyperdock.xposed.hook.Sidebar
 import android.app.Application
 import android.content.Context
 import android.content.res.Configuration
-import android.util.Log
+import io.github.z1812.hyperdock.xposed.LogUtil as Log
 import android.view.View
 import android.view.ViewGroup
 import io.github.z1812.hyperdock.PrefKeys

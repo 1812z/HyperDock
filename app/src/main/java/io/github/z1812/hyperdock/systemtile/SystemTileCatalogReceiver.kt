@@ -26,7 +26,7 @@ class SystemTileCatalogReceiver : BroadcastReceiver() {
             try {
                 SystemTileCatalogCache.save(appContext, entries)
             } catch (t: Throwable) {
-                android.util.Log.w(TAG, "save system tile catalog failed", t)
+                io.github.z1812.hyperdock.xposed.LogUtil.w(TAG, "save system tile catalog failed", t)
             } finally {
                 runCatching { pending.finish() }
             }

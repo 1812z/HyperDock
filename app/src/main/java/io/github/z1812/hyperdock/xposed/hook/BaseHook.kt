@@ -1,6 +1,6 @@
 package io.github.z1812.hyperdock.xposed.hook
 
-import android.util.Log
+import io.github.z1812.hyperdock.xposed.LogUtil as Log
 import io.github.z1812.hyperdock.xposed.ConfigManager
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
@@ -35,16 +35,15 @@ abstract class BaseHook {
     }
 
     protected fun log(module: XposedModule, message: String) {
-        if (ConfigManager.isDebugLogEnabled())
-            module.log(Log.DEBUG, getTag(), message)
+        Log.log(module, Log.DEBUG, getTag(), message)
     }
 
     protected fun logWarn(module: XposedModule, message: String) {
-        module.log(Log.WARN, getTag(), message)
+        Log.log(module, Log.WARN, getTag(), message)
     }
 
     protected fun logError(module: XposedModule, message: String) {
-        module.log(Log.ERROR, getTag(), message)
+        Log.log(module, Log.ERROR, getTag(), message)
     }
 
     /** Hook 入口点，确保配置管理器初始化后调用 onInit。 */

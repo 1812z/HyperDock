@@ -3,7 +3,7 @@ package io.github.z1812.hyperdock
 import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Log
+import io.github.z1812.hyperdock.xposed.LogUtil as Log
 import io.github.z1812.hyperdock.compose.data.PrefsRepository
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
