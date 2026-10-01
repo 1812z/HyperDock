@@ -589,7 +589,6 @@ object SidebarDockSlotHook : BaseHook() {
     private fun twoColumnsEnabled(): Boolean {
         if (isLandscape()) return false
         if (!ConfigManager.getBoolean(PrefKeys.SIDEBAR_TWO_COLUMNS, false)) return false
-        if (ConfigManager.getBoolean(PrefKeys.SIDEBAR_EXPAND_ALL_APPS, false)) return false
         return true
     }
 

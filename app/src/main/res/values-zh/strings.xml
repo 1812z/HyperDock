@@ -43,7 +43,7 @@
     <string name="sidebar_panel_cache_summary">保留已初始化面板，加快后续打开速度</string>
     <string name="sidebar_two_columns">侧边栏两列</string>
     <string name="sidebar_two_columns_summary">侧边栏应用图标以两列排布；竖屏下展开全部应用面板时自动缩回一列，横屏保持两列</string>
-    <string name="sidebar_two_columns_conflict">两者互斥：开启其中一个会自动关闭另一个</string>
+    <string name="sidebar_two_columns_conflict">侧边栏两列与自动展开冲突</string>
     <string name="sidebar_quick_slot">速记旁的图标</string>
     <string name="sidebar_quick_slot_summary">未设置时速记单独占一行并居中</string>
     <string name="sidebar_quick_slot_none">未设置</string>

@@ -92,24 +92,15 @@ internal fun SidebarBehaviorPage(
             .distinct().filter { it in ids && it in enabledSections }
     }
 
-    // 「两列」与「自动展开面板」互斥：打开其中一个，另一个必须同时关掉。
-    // Hook 侧按读取到的配置决定列数，两个开关同时为真会让面板状态不确定。
+    // 两列优先，保留自动展开的配置值；冲突由 Hook 端判断实际是否生效。
     fun setTwoColumns(checked: Boolean) {
         twoColumns.value = checked
         prefs.putBoolean(PrefKeys.SIDEBAR_TWO_COLUMNS, checked)
-        if (checked && expandAllApps.value) {
-            expandAllApps.value = false
-            prefs.putBoolean(PrefKeys.SIDEBAR_EXPAND_ALL_APPS, false)
-        }
     }
 
     fun setExpandAllApps(checked: Boolean) {
         expandAllApps.value = checked
         prefs.putBoolean(PrefKeys.SIDEBAR_EXPAND_ALL_APPS, checked)
-        if (checked && twoColumns.value) {
-            twoColumns.value = false
-            prefs.putBoolean(PrefKeys.SIDEBAR_TWO_COLUMNS, false)
-        }
     }
 
     fun setVisible(id: String, checked: Boolean) {
@@ -140,8 +131,7 @@ internal fun SidebarBehaviorPage(
             Card(modifier = Modifier.fillMaxWidth()) {
                 PreferenceSwitch(
                     stringResource(R.string.sidebar_two_columns),
-                    if (expandAllApps.value) stringResource(R.string.sidebar_two_columns_conflict)
-                    else stringResource(R.string.sidebar_two_columns_summary),
+                    stringResource(R.string.sidebar_two_columns_summary),
                     null,
                     twoColumns.value,
                 ) { setTwoColumns(it) }
@@ -169,10 +159,11 @@ internal fun SidebarBehaviorPage(
                     else stringResource(R.string.sidebar_expand_all_apps_summary),
                     null,
                     expandAllApps.value,
+                    enabled = !twoColumns.value,
                 ) { setExpandAllApps(it) }
                 PreferenceSwitch(stringResource(R.string.sidebar_panel_cache), stringResource(R.string.sidebar_panel_cache_summary), null, panelCache.value) { panelCache.value = it; prefs.putBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, it) }
                 AnimatedVisibility(
-                    visible = expandAllApps.value && panelCache.value,
+                    visible = expandAllApps.value && !twoColumns.value && panelCache.value,
                     enter = expandVertically(
                         animationSpec = tween(280, easing = FastOutSlowInEasing),
                         expandFrom = Alignment.Top,

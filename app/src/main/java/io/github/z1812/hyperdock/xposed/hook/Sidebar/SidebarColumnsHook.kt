@@ -502,8 +502,7 @@ object SidebarColumnsHook : BaseHook() {
     internal fun currentColumns(recycler: View): Int = appliedColumns[recycler] ?: 1
 
     /**
-     * 目标列数。两个开关在设置页互斥，但导入备份配置可能绕过 UI，
-     * 因此这里再兜一层：自动展开面板开着就不认两列。
+     * 目标列数。两列优先，自动展开是否生效由 SidebarDefaultExpandHook 判断。
      *
      * 两处让位都只发生在竖屏：
      * - 全部应用面板展开（[allAppsPanelOpen]）：竖屏时 dock 加宽到 132dp 会挤压面板，
@@ -514,7 +513,6 @@ object SidebarColumnsHook : BaseHook() {
         if (!landscape && allAppsPanelOpen) return 1
         if (!landscape && hasBoxPanel(dock)) return 1
         if (!ConfigManager.getBoolean(PREF_ENABLED, false)) return 1
-        if (ConfigManager.getBoolean(PrefKeys.SIDEBAR_EXPAND_ALL_APPS, false)) return 1
         return COLUMN_COUNT
     }
 

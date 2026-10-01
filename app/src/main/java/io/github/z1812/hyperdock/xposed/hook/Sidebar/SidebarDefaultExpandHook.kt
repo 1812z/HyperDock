@@ -34,6 +34,10 @@ object SidebarDefaultExpandHook : BaseHook() {
     /** 功能开关配置键，必须在 Compose 端与 ConfigManager 的 core 组中同时登记。 */
     const val PREF_ENABLED = PrefKeys.SIDEBAR_EXPAND_ALL_APPS
 
+    private fun autoExpandEnabled(): Boolean =
+        ConfigManager.getBoolean(PREF_ENABLED, false) &&
+            !ConfigManager.getBoolean(PrefKeys.SIDEBAR_TWO_COLUMNS, false)
+
     /** 仅在“静默加入全部应用面板”期间为 true，用于跳过原生入场动画。 */
     private val silentAdd = AtomicBoolean(false)
     /** Native expansion itself calls the same release routine as close. */
@@ -41,6 +45,7 @@ object SidebarDefaultExpandHook : BaseHook() {
     private val sidebarOpen = AtomicBoolean(false)
     private val silentHookInstalled = AtomicBoolean(false)
     private val retainedPanelFields = Collections.synchronizedMap(WeakHashMap<Class<*>, Field>())
+    private val dockTypeAccessors = Collections.synchronizedMap(WeakHashMap<Class<*>, Pair<Field, Method>>())
 
     override fun getTag() = TAG
 
@@ -61,6 +66,7 @@ object SidebarDefaultExpandHook : BaseHook() {
         log(module, "hooking normal sidebar ${openMethod.declaringClass.name}.${openMethod.name}")
         hookWrapperPreload(module, openMethod.parameterTypes[0])
         hookPanelReleaseWithDexKit(module, classLoader, openMethod.parameterTypes[0])
+        hookDockTypeDiscovery(module, classLoader, openMethod.parameterTypes[0])
         module.hook(openMethod).intercept { chain ->
             val opening = chain.args.getOrNull(1) as? Boolean ?: false
             sidebarOpen.set(opening)
@@ -68,7 +74,7 @@ object SidebarDefaultExpandHook : BaseHook() {
                 chain.args.firstOrNull()?.let { findRootView(it)?.visibility = View.VISIBLE }
             }
             val result = chain.proceed()
-            if (opening && ConfigManager.getBoolean(PREF_ENABLED, false)) {
+            if (opening && autoExpandEnabled()) {
                 val wrapper = chain.args.firstOrNull() ?: return@intercept result
                 val panel = findPanelLayout(wrapper)
                 if (panel != null) {
@@ -93,7 +99,7 @@ object SidebarDefaultExpandHook : BaseHook() {
             module.hook(constructor).intercept { chain ->
                 val result = chain.proceed()
                 findRootView(chain.thisObject)?.post {
-                    if (ConfigManager.getBoolean(PREF_ENABLED, false)) {
+                    if (autoExpandEnabled()) {
                         findPanelLayout(chain.thisObject)?.let { preparePanelHooks(module, it) }
                     }
                 }
@@ -128,7 +134,7 @@ object SidebarDefaultExpandHook : BaseHook() {
 
     /** 配置关闭时不再执行，避免影响原生交互。 */
     override fun onConfigChanged() {
-        if (!ConfigManager.getBoolean(PREF_ENABLED, false)) {
+        if (!autoExpandEnabled()) {
             silentAdd.set(false)
         }
     }
@@ -200,10 +206,12 @@ object SidebarDefaultExpandHook : BaseHook() {
      * 仅在普通 Dock（type == 4）且尚未展开时执行。
      */
     private fun expandAllApps(turbo: Any?) {
+        if (!autoExpandEnabled()) return
         val target = turbo ?: return
         val dockLayout = findDockLayout(target) ?: return
         if (!isNormalDock(target)) return
-        val staggered = ConfigManager.getBoolean(PREF_ENABLED, false) &&
+        if (hasVisibleToolbox(target)) return
+        val staggered = autoExpandEnabled() &&
             ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false) &&
             ConfigManager.getBoolean(PrefKeys.SIDEBAR_STAGGERED_EXPAND, false)
         // Native expansion may dispatch an internal close-shaped callback. Keep
@@ -243,7 +251,7 @@ object SidebarDefaultExpandHook : BaseHook() {
                             silentAdd.set(previousSilent)
                         }
                     }
-                    if (!staggered && ConfigManager.getBoolean(PREF_ENABLED, false)) {
+                    if (!staggered && autoExpandEnabled()) {
                         restorePanelVisibility(cachedPanel)
                     }
                 }
@@ -319,13 +327,58 @@ object SidebarDefaultExpandHook : BaseHook() {
 
     /** 侧边栏类型是否为普通 Dock（dockType == 4），避免影响游戏/视频模式。 */
     private fun isNormalDock(turbo: Any): Boolean {
-        // Normal sidebar owns TurboLayout through a sidebar-wrapper object whose
-        // no-arg accessor returns this exact layout type. Game-only layouts do
-        // not have that wrapper relationship.
-        return turbo.javaClass.declaredFields.any { field ->
-            field.type.declaredMethods.any { method ->
-                method.parameterCount == 0 && method.returnType == turbo.javaClass
+        val accessor = generateSequence(turbo.javaClass as Class<*>?) { it.superclass }
+            .firstNotNullOfOrNull { dockTypeAccessors[it] } ?: return false
+        return runCatching {
+            val state = accessor.first.get(turbo) ?: return@runCatching false
+            accessor.second.invoke(state) == "DockAssistantView"
+        }.getOrDefault(false)
+    }
+
+    /** 通过宿主场景名称常量定位类型状态，打开动画及面板挂载之前就已有效。 */
+    private fun hookDockTypeDiscovery(module: XposedModule, loader: ClassLoader, wrapperClass: Class<*>) {
+        runCatching {
+            val turbo = wrapperClass.declaredFields.map { it.type }.singleOrNull { type ->
+                ViewGroup::class.java.isAssignableFrom(type) && type.declaredMethods.any { method ->
+                    method.returnType == Void.TYPE && method.parameterCount == 6 &&
+                        method.parameterTypes.all { it == Int::class.javaPrimitiveType }
+                }
+            } ?: error("TurboLayout contract unavailable")
+            System.loadLibrary("dexkit")
+            val label = DexKitBridge.create(loader, false).use { bridge ->
+                bridge.findMethod {
+                    matcher {
+                        returnType("java.lang.String")
+                        paramTypes()
+                        usingStrings("DockAssistantView", "FloatAssistantView", "VtbAssistantView")
+                    }
+                }.mapNotNull { runCatching { it.getMethodInstance(loader) }.getOrNull() }
+                    .singleOrNull { !Modifier.isStatic(it.modifiers) && !it.isSynthetic }
+            } ?: error("dock type label method unavailable")
+            val field = allFields(turbo).filter { it.type == label.declaringClass }.singleOrNull()
+                ?: error("dock type state field unavailable")
+            field.isAccessible = true
+            label.isAccessible = true
+            dockTypeAccessors[turbo] = field to label
+            log(module, "dock type resolved by DexKit: ${field.type.name}.${label.name}")
+        }.onFailure {
+            logWarn(module, "dock type discovery failed; automatic expansion disabled: ${it.message}")
+        }
+    }
+
+    /** wrapper 也用于游戏场景，不能仅凭持有 wrapper 就认定为普通侧边栏。 */
+    private fun hasVisibleToolbox(turbo: Any): Boolean {
+        val root = turbo as? View ?: return false
+        return listOf("getGameTurboLayout", "getBoxView").any { getter ->
+            val panel = runCatching { turbo.javaClass.getMethod(getter).invoke(turbo) as? View }
+                .getOrNull() ?: return@any false
+            var current: View? = panel
+            while (current != null && current !== root) {
+                if (current.visibility != View.VISIBLE || current.alpha <= 0.01f) return@any false
+                current = current.parent as? View
             }
+            // 打开流程可能还未 attach，因此检查实际挂载及祖先可见性，不依赖 isShown。
+            current === root && root.visibility == View.VISIBLE && root.alpha > 0.01f
         }
     }
 

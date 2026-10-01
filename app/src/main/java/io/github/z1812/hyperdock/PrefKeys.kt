@@ -25,7 +25,7 @@ object PrefKeys {
     const val SIDEBAR_EXPAND_ALL_APPS = "sidebar_expand_all_apps"
     const val SIDEBAR_PANEL_CACHE = "sidebar_panel_cache"
     const val SIDEBAR_STAGGERED_EXPAND = "sidebar_staggered_expand"
-    /** 侧边栏两列。与 [SIDEBAR_EXPAND_ALL_APPS] 互斥，见 SidebarBehaviorPage。 */
+    /** 侧边栏两列。开启时由 Hook 暂停 [SIDEBAR_EXPAND_ALL_APPS]，保留其配置值。 */
     const val SIDEBAR_TWO_COLUMNS = "sidebar_two_columns"
     /**
      * 两列模式下「速记」旁边那一格放什么。值为条目 id：
