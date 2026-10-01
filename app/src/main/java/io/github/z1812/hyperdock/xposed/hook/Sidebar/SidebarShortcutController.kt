@@ -14,6 +14,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.util.LruCache
 import io.github.z1812.hyperdock.xposed.LogUtil as Log
 import android.view.View
 import android.view.ViewGroup
@@ -35,6 +36,7 @@ import java.util.Collections
 import java.util.HashSet
 import java.util.WeakHashMap
 import java.util.Locale
+import java.util.concurrent.Executors
 import org.luckypray.dexkit.DexKitBridge
 
 /**
@@ -68,6 +70,9 @@ internal object SidebarShortcutController {
 
     /** 注入标题的哨兵 textRes。原生标题一定使用有效资源 id，-1 不会与之冲突。 */
     private const val TITLE_SENTINEL = -1
+    // 有效框架资源作为独立身份，避免宿主 DiffUtil 配对到原生标题。
+    private const val SHORTCUTS_TITLE_ID = android.R.string.copy
+    private const val QUICK_ACTIONS_TITLE_ID = android.R.string.paste
 
     /** 注入快捷方式的 QuickInfo id 前缀，避免与原生快捷方式 id 冲突。 */
     private const val ID_PREFIX = "hyperdock::"
@@ -147,12 +152,22 @@ internal object SidebarShortcutController {
      * （磁贴剔白底、应用图标切圆角），只按 source 缓存会把先到的那份串给另一个。
      */
     private val normalizedIconCache = java.util.WeakHashMap<Drawable, MutableMap<String, Drawable>>()
+    private val quickIconCache = LruCache<String, Drawable>(64)
+    private val quickIconLock = Any()
+    private val pendingQuickIcons = HashSet<String>()
+    private val quickIconBindings = WeakHashMap<ImageView, String>()
+    private val quickIconExecutor = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "hyperdock-quick-icons").apply { isDaemon = true }
+    }
+    private val iconHandler = Handler(Looper.getMainLooper())
+    private var quickIconGeneration = 0L
     @Volatile private var stateReceiverInstalled = false
     /** 记录本 Hook 创建的标题对象，避免使用无效 textRes 作为识别标记。 */
     private val injectedTitles = Collections.newSetFromMap(WeakHashMap<Any, Boolean>())
 
     // ── 反射缓存 ──────────────────────────────────────────────────────────────
     private var adapterMethod: Method? = null
+    private var adapterModelsField: Field? = null
     private var stateFlowSetMethods: List<Method> = emptyList()
     @Volatile private var stateFlowMethod: Method? = null
     @Volatile private var stateFlowInstance: Any? = null
@@ -435,7 +450,15 @@ internal object SidebarShortcutController {
                 module.hook(m).intercept { chain ->
                     val result = chain.proceed()
                     val holder = chain.args.firstOrNull() ?: return@intercept result
-                    val model = findShortcutModel(holder) ?: return@intercept result
+                    val position = chain.args.getOrNull(1) as? Int ?: return@intercept result
+                    val boundModel = runCatching {
+                        (adapterModelsField?.get(chain.thisObject) as? List<*>)?.getOrNull(position)
+                    }.getOrNull()
+                    if (boundModel != null && isInjectedTitle(boundModel)) {
+                        applyTitleText(holder, readTitleResolvedText(boundModel))
+                        return@intercept result
+                    }
+                    val model = boundModel ?: findShortcutModel(holder) ?: return@intercept result
                     if (isInjectedShortcut(model)) {
                         installDirectShortcutClick(holder, model)
                     } else {
@@ -486,11 +509,15 @@ internal object SidebarShortcutController {
                 List::class.java.isAssignableFrom(m.parameterTypes[0])
             }
             adapterBindMethods = adapterClass.declaredMethods.filter { method ->
+                !method.isSynthetic &&
                 !Modifier.isAbstract(method.modifiers) &&
                     method.returnType == Void.TYPE && method.parameterCount >= 2 &&
                     !method.parameterTypes[0].isPrimitive &&
                     method.parameterTypes[1] == Int::class.javaPrimitiveType
             }.onEach { it.isAccessible = true }
+            adapterModelsField = adapterClass.declaredFields.singleOrNull {
+                !Modifier.isStatic(it.modifiers) && List::class.java.isAssignableFrom(it.type)
+            }?.also { it.isAccessible = true }
             spanSizeMethods = findSpanSizeMethods(loader)
 
             // 不依赖 r8 优化后的字段/方法签名：只按公开语义寻找单参数 setValue，
@@ -777,12 +804,25 @@ internal object SidebarShortcutController {
 
     /** Title holder is similarly identified by its single Model.Title bind method. */
     private fun findTitleHolderClass(loader: ClassLoader, titleClass: Class<*>): Class<*>? {
-        return discoverClasses(loader).firstOrNull { candidate ->
-            candidate.declaredMethods.any { method ->
-                method.parameterCount == 1 && method.returnType == Void.TYPE &&
-                    method.parameterTypes[0] == titleClass
+        return runCatching {
+            System.loadLibrary("dexkit")
+            DexKitBridge.create(loader, false).use { bridge ->
+                bridge.findMethod {
+                    matcher {
+                        returnType("void")
+                        paramTypes(titleClass.name)
+                        invokeMethods {
+                            add {
+                                declaredClass("android.widget.TextView")
+                                name("setText")
+                                paramTypes("int")
+                            }
+                        }
+                    }
+                }.mapNotNull { runCatching { it.getMethodInstance(loader) }.getOrNull() }
+                    .map { it.declaringClass }.distinct().singleOrNull()
             }
-        }
+        }.getOrNull()
     }
 
     /**
@@ -881,13 +921,6 @@ internal object SidebarShortcutController {
         injectedPrefixSize = 0
 
         val result = ArrayList<Any>(filtered.size + quickFunctions.size + ordered.size + 2)
-        // Keep a valid resource id as a crash-safe fallback if a title holder
-        // variant is not covered by the runtime hook. Covered holders replace
-        // the text with resolvedText below.
-        val styleRes = filtered.asSequence()
-            .mapNotNull { readTitleResource(it) }
-            .firstOrNull { it > 0 }
-            ?: android.R.string.ok
         var created = 0
         fun beginSection() {
             if (result.isNotEmpty()) dividerModel?.let { result.add(it) }
@@ -904,12 +937,12 @@ internal object SidebarShortcutController {
                 }
                 CUSTOM_SHORTCUTS -> if (ordered.isNotEmpty()) {
                     beginSection()
-                    buildTitle(styleRes, SidebarSectionConfig.shortcutsTitle())?.let { result.add(it) }
+                    buildTitle(SHORTCUTS_TITLE_ID, SidebarSectionConfig.shortcutsTitle())?.let { result.add(it) }
                     ordered.forEach { id -> buildShortcut(id)?.let { result.add(it); created++ } }
                 }
                 CUSTOM_QUICK_ACTIONS -> if (quickFunctions.isNotEmpty()) {
                     beginSection()
-                    buildTitle(styleRes, SidebarSectionConfig.quickActionsTitle())?.let { result.add(it) }
+                    buildTitle(QUICK_ACTIONS_TITLE_ID, SidebarSectionConfig.quickActionsTitle())?.let { result.add(it) }
                     quickFunctions.forEach { id -> buildShortcut(id)?.let { result.add(it) } }
                 }
             }
@@ -1072,10 +1105,9 @@ internal object SidebarShortcutController {
         // 自定义图标绝不写入 QuickInfo 的 icon 字段：原生绑定器 w0.e() 会用
         // 宿主 UIL 异步加载该 URI 并在完成后替换展示 drawable，任何着色都会
         // 被覆盖（V1 的 content:// 与默认图标的 android.resource:// 均如此）。
-        // 非 activity 条目 icon 保持为空——空 URI 在绑定器内部同步走
+        // 所有注入条目 icon 保持为空——空 URI 在绑定器内部同步走
         // “取消任务+清空”路径，不会产生异步覆盖；图标完全由 bindInjectedIcon
-        // 从模块配置同步绑定。activity:（快速启动）条目例外：其自定义图标
-        // 历史上就经 QuickInfo 传递且无磁贴着色，维持原状。
+        // 从模块配置绑定，快速启动的解码和归一化在后台完成。
         SYSTEM_LABELS[id]?.let { (zh, en) ->
             // HyperIsland 条目与其他系统磁贴保持完全相同的 QuickInfo 形态
             // （NATIVE + 空组件）：点击由注入的监听器消费，绝不依赖原生分发，
@@ -1223,43 +1255,15 @@ internal object SidebarShortcutController {
             ?: run { logNow("icon bind skipped: no quick info on ${model.javaClass.name}"); return }
         val componentId = quickInfoId(quickInfo).removePrefix(ID_PREFIX)
         val isQuickLaunch = QuickLaunchFormat.isQuickLaunch(componentId)
-        val payload = quickLaunchPayload(componentId)
-        val customUri = if (isQuickLaunch) null else customIconUri(componentId)
-        val drawable = when {
-            // URL 条目没有组件可查：QuickInfo.icon 带的是用户自定义图标，没设过
-            // 就退回模块内置的 URL 图标（跨进程按资源名取，同 HyperIsland）。
-            isQuickLaunch && QuickLaunchFormat.isUrl(payload) ->
-                loadIconUri(imageView.context, quickInfoValue(quickInfo, 1))
-                    ?: moduleDrawable(imageView.context, URL_ICON_RES)
-            isQuickLaunch -> loadIconUri(imageView.context, quickInfoValue(quickInfo, 1))
-                ?: loadActivityDrawable(imageView.context, payload)
-            else -> {
-                // 非 activity 注入条目的 QuickInfo.icon 恒为空，宿主异步加载无从
-                // 触发；自定义图标与默认图标都在这里同步解码并烘焙着色。
-                loadIconUri(imageView.context, customUri)
-                    ?: loadInjectedDrawable(imageView.context, componentId)
-            }
-        }
-            ?: loadSystemDrawable(imageView.context, componentId)
-            ?: imageView.context.getDrawable(android.R.drawable.ic_menu_info_details)
-        val enabled = tileState[componentId] == true
-        val colorIcon = colorIconEnabled(componentId)
-        tileViews[componentId] = imageView
-        // 图标到底走的哪条路（自定义 URI / 应用图标 / 模块兜底），排错时只看这一行就够。
-        // 注意：必须走 module.log —— 裸 Log.d 不会进 LSPosed 的日志。
-        logNow(
-            "icon bound id=$componentId quickLaunch=$isQuickLaunch " +
-                "uri=${if (isQuickLaunch) quickInfoValue(quickInfo, 1) else customUri} " +
-                "resolved=${drawable?.javaClass?.simpleName} " +
-                "styled=${if (isQuickLaunch) "quickLaunch" else "tile"} " +
-                "view=${System.identityHashCode(imageView)} attached=${imageView.isAttachedToWindow}"
-        )
+        tileViews.entries.removeAll { it.value === imageView }
         if (isQuickLaunch) {
-            styleQuickLaunchIcon(imageView, drawable)
-        } else {
-            styleTileIcon(imageView, drawable, enabled, colorIcon)
+            bindQuickLaunchIcon(imageView, componentId)
+            return
         }
-        if (!isQuickLaunch && queriedStates.add(componentId)) {
+        quickIconBindings.remove(imageView)
+        tileViews[componentId] = imageView
+        bindCachedTileIcon(imageView, componentId)
+        if (queriedStates.add(componentId)) {
             requestTileState(imageView.context, componentId)
         }
     }
@@ -1436,7 +1440,7 @@ internal object SidebarShortcutController {
         return null
     }
 
-    private fun styleTileIcon(imageView: ImageView, source: Drawable?, enabled: Boolean, colorIcon: Boolean = false) {
+    private fun styleTileIcon(imageView: ImageView, source: Drawable?, enabled: Boolean, colorIcon: Boolean = false, normalized: Boolean = false) {
         val density = imageView.resources.displayMetrics.density
         if (!originalIconBounds.containsKey(imageView)) {
             val lp = imageView.layoutParams
@@ -1444,9 +1448,12 @@ internal object SidebarShortcutController {
         }
         val size = (46f * density).toInt()
         val padding = (8f * density).toInt()
-        imageView.layoutParams = imageView.layoutParams?.apply {
-            width = size
-            height = size
+        imageView.layoutParams?.let { params ->
+            if (params.width != size || params.height != size) {
+                params.width = size
+                params.height = size
+                imageView.layoutParams = params
+            }
         }
         imageView.setPadding(padding, padding, padding, padding)
         imageView.translationX = 2f * density
@@ -1495,7 +1502,8 @@ internal object SidebarShortcutController {
         // 于是同一排里混着"归一化过"和"没归一化"两种视觉尺寸，就是"有的很小"。
         // [IconNormalizer] 改以 alpha 通道判形状，白字形一样能量准边界。
         val display = source
-            ?.let { normalizedIcon(imageView.context, it, trimWhitePlate = true) }
+            ?.let { if (normalized) it else normalizedIcon(imageView.context, it, trimWhitePlate = true) }
+            ?.let { it.constantState?.newDrawable(imageView.resources) ?: it }
             ?.mutate()?.apply {
             if (colorIcon) {
                 clearColorFilter()
@@ -1526,9 +1534,9 @@ internal object SidebarShortcutController {
         trimWhitePlate: Boolean,
         cornerPercent: Float = 0f,
         contentInset: Float = 0f,
-    ): Drawable {
+    ): Drawable = synchronized(normalizedIconCache) {
         val slot = normalizedIconCache.getOrPut(source) { HashMap(2) }
-        return slot.getOrPut("$trimWhitePlate/$cornerPercent/$contentInset") {
+        slot.getOrPut("$trimWhitePlate/$cornerPercent/$contentInset") {
             IconNormalizer.normalizeDrawable(
                 context,
                 source,
@@ -1550,11 +1558,14 @@ internal object SidebarShortcutController {
      * 由 IconCustomizer 套形状；我们唯一要做的就是别把它改掉 —— 之前写死
      * `MATCH_PARENT` 会让图标铺满整个单元格，就是"全尺寸、大小不对"。
      */
-    private fun styleQuickLaunchIcon(imageView: ImageView, source: Drawable?) {
+    private fun styleQuickLaunchIcon(imageView: ImageView, source: Drawable?, normalized: Boolean = false) {
         originalIconBounds[imageView]?.let { bounds ->
-            imageView.layoutParams = imageView.layoutParams?.apply {
-                width = bounds[0]
-                height = bounds[1]
+            imageView.layoutParams?.let { params ->
+                if (params.width != bounds[0] || params.height != bounds[1]) {
+                    params.width = bounds[0]
+                    params.height = bounds[1]
+                    imageView.layoutParams = params
+                }
             }
         }
         imageView.setPadding(0, 0, 0, 0)
@@ -1573,7 +1584,7 @@ internal object SidebarShortcutController {
         // contentInset 补回原生自适应图标那圈内边距（归一化是把内容顶满的）。
         val display = source
             ?.let {
-                normalizedIcon(
+                if (normalized) it else normalizedIcon(
                     imageView.context,
                     it,
                     trimWhitePlate = false,
@@ -1588,8 +1599,102 @@ internal object SidebarShortcutController {
         imageView.setImageDrawable(display)
     }
 
+    /** 缓存处理后的图标，滚动重绑不再解码或逐像素归一化。 */
+    private fun bindCachedTileIcon(view: ImageView, id: String) {
+        val context = view.context.applicationContext
+        val uri = customIconUri(id).orEmpty()
+        val config = view.resources.configuration
+        val generation = synchronized(quickIconLock) { quickIconGeneration }
+        val key = "tile/$generation/$id/$uri/${config.densityDpi}/${config.uiMode}"
+        val previous = quickIconBindings.put(view, key)
+        val cached = synchronized(quickIconLock) { quickIconCache.get(key) }
+        if (cached != null) {
+            styleTileIcon(view, cached, tileState[id] == true, colorIconEnabled(id), normalized = true)
+            return
+        }
+        if (previous != key) styleTileIcon(view, null, tileState[id] == true, colorIconEnabled(id))
+        if (!synchronized(quickIconLock) { pendingQuickIcons.add(key) }) return
+        quickIconExecutor.execute {
+            val loaded = runCatching {
+                val source = loadIconUri(context, uri)
+                    ?: loadInjectedDrawable(context, id)
+                    ?: loadSystemDrawable(context, id)
+                    ?: context.getDrawable(android.R.drawable.ic_menu_info_details)
+                source?.let {
+                    IconNormalizer.normalizeDrawable(context, it, ICON_CANVAS_SIZE, trimWhitePlate = true)
+                }
+            }.getOrNull()
+            val published = synchronized(quickIconLock) {
+                pendingQuickIcons.remove(key)
+                if (loaded != null && generation == quickIconGeneration) {
+                    quickIconCache.put(key, loaded)
+                    true
+                } else false
+            }
+            if (published && loaded != null) iconHandler.post {
+                if (synchronized(quickIconLock) { generation != quickIconGeneration }) return@post
+                quickIconBindings.entries.toList().forEach { (target, boundKey) ->
+                    if (boundKey == key) {
+                        styleTileIcon(target, loaded, tileState[id] == true, colorIconEnabled(id), normalized = true)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun bindQuickLaunchIcon(view: ImageView, id: String) {
+        val context = view.context.applicationContext
+        val payload = quickLaunchPayload(id)
+        val entry = QuickLaunchFormat.shortcutEntryId(id) ?: return
+        val uri = ConfigManager.getStringSet(PrefKeys.QUICK_FUNCTIONS_ICON_URIS, emptySet())
+            .firstOrNull { it.startsWith("$entry=") }?.substringAfter('=').orEmpty()
+        val configuration = view.resources.configuration
+        val generation = synchronized(quickIconLock) { quickIconGeneration }
+        val key = "$generation/$id/$uri/${configuration.densityDpi}/${configuration.uiMode}"
+        val previous = quickIconBindings.put(view, key)
+        val cached = synchronized(quickIconLock) { quickIconCache.get(key) }
+        if (cached != null) {
+            styleQuickLaunchIcon(view, cached.constantState?.newDrawable(view.resources) ?: cached, normalized = true)
+            return
+        }
+        if (previous != key) styleQuickLaunchIcon(view, null, normalized = true)
+        if (!synchronized(quickIconLock) { pendingQuickIcons.add(key) }) return
+        quickIconExecutor.execute {
+            val loaded = runCatching {
+                val source = (loadIconUri(context, uri)
+                    ?: if (QuickLaunchFormat.isUrl(payload)) moduleDrawable(context, URL_ICON_RES)
+                    else loadActivityDrawable(context, payload))
+                    ?: context.getDrawable(android.R.drawable.ic_menu_info_details)
+                source?.let {
+                    IconNormalizer.normalizeDrawable(
+                        context, it, ICON_CANVAS_SIZE,
+                        contentInset = QUICK_LAUNCH_ICON_INSET_PERCENT,
+                        trimWhitePlate = false,
+                        cornerPercent = QUICK_LAUNCH_ICON_CORNER_PERCENT,
+                    )
+                }
+            }.getOrNull()
+            val published = synchronized(quickIconLock) {
+                pendingQuickIcons.remove(key)
+                if (loaded != null && generation == quickIconGeneration) {
+                    quickIconCache.put(key, loaded)
+                    true
+                } else false
+            }
+            if (published && loaded != null) iconHandler.post {
+                if (synchronized(quickIconLock) { generation != quickIconGeneration }) return@post
+                quickIconBindings.entries.toList().forEach { (target, boundKey) ->
+                    if (boundKey == key) {
+                        styleQuickLaunchIcon(target, loaded.constantState?.newDrawable(target.resources) ?: loaded, normalized = true)
+                    }
+                }
+            }
+        }
+    }
+
     private fun resetNativeIcon(holder: Any) {
         val imageView = findImageView(holder) ?: return
+        quickIconBindings.remove(imageView)
         // 视图已复用给原生条目：移除 tileViews 注册，防止状态广播按陈旧
         // componentId 找到该视图并重新套用注入磁贴的样式。
         tileViews.entries.removeAll { it.value === imageView }
@@ -1652,6 +1757,10 @@ internal object SidebarShortcutController {
     private fun installConfigChangeListener() {
         if (configListenerRegistered) return
         ConfigManager.addChangeListener {
+            synchronized(quickIconLock) {
+                quickIconGeneration++
+                quickIconCache.evictAll()
+            }
             refreshInjectedShortcuts()
         }
         configListenerRegistered = true
@@ -1698,10 +1807,7 @@ internal object SidebarShortcutController {
                 tileState[id] = enabled
                 if (toggleable) toggleableTiles.add(id) else toggleableTiles.remove(id)
                 tileViews[id]?.let { view ->
-                    val drawable = loadIconUri(view.context, customIconUri(id))
-                        ?: loadInjectedDrawable(view.context, id)
-                        ?: loadSystemDrawable(view.context, id)
-                    styleTileIcon(view, drawable, enabled, colorIconEnabled(id))
+                    bindCachedTileIcon(view, id)
                 }
             }
         }
@@ -1739,12 +1845,13 @@ internal object SidebarShortcutController {
         if (entries.isEmpty()) return
         if (entries.map { it.spec }.toSet() == SystemTileCatalogStore.specsSnapshot()) return
         SystemTileCatalogStore.onCatalog(context, entries)
+        synchronized(quickIconLock) {
+            quickIconGeneration++
+            quickIconCache.evictAll()
+        }
         ConfigManager.module()?.let { log(it, "system catalog: ${entries.size} tiles") }
         tileViews.entries.toList().forEach { (id, view) ->
-            val drawable = loadIconUri(view.context, customIconUri(id))
-                ?: loadInjectedDrawable(view.context, id)
-                ?: loadSystemDrawable(view.context, id)
-            styleTileIcon(view, drawable, tileState[id] == true, colorIconEnabled(id))
+            bindCachedTileIcon(view, id)
         }
         refreshInjectedShortcuts()
     }
@@ -1854,10 +1961,7 @@ internal object SidebarShortcutController {
             val enabled = !(tileState[id] ?: false)
             tileState[id] = enabled
             tileViews[id]?.let { view ->
-                val drawable = loadIconUri(view.context, customIconUri(id))
-                    ?: loadInjectedDrawable(view.context, id)
-                    ?: loadSystemDrawable(view.context, id)
-                styleTileIcon(view, drawable, enabled, colorIconEnabled(id))
+                bindCachedTileIcon(view, id)
             }
         }
         if (QuickLaunchFormat.isQuickLaunch(id)) {
@@ -1982,7 +2086,8 @@ internal object SidebarShortcutController {
         if (fields.size < 8) return false
         return runCatching {
             fields[0].set(qi, ID_PREFIX + id)   // id
-            fields[1].set(qi, target.iconUri.orEmpty()) // icon URI
+            // 空 URI 让宿主取消旧任务，禁止异步图标覆盖模块的绑定结果。
+            fields[1].set(qi, "") // icon URI
             fields[2].set(qi, target.label)       // name
             fields[3].set(qi, target.label)       // title（展示名）
             fields[4].set(qi, "android.intent.action.MAIN") // action
@@ -1997,12 +2102,8 @@ internal object SidebarShortcutController {
 
     private fun isInjectedTitle(title: Any?): Boolean =
         title != null && titleClassMatches(title) &&
-            (injectedTitles.contains(title) || readTitleTextRes(title) == TITLE_SENTINEL)
-
-    private fun readTitleResource(title: Any): Int? =
-        runCatching {
-            if (titleClassMatches(title)) readTitleTextRes(title) else null
-        }.getOrNull()
+            (injectedTitles.contains(title) || readTitleTextRes(title) == TITLE_SENTINEL ||
+                readTitleTextRes(title) == SHORTCUTS_TITLE_ID || readTitleTextRes(title) == QUICK_ACTIONS_TITLE_ID)
 
     private fun titleClassMatches(title: Any): Boolean =
         title.javaClass == titleCtor?.declaringClass
