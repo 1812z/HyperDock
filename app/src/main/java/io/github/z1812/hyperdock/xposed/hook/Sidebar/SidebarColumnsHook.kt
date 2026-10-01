@@ -15,9 +15,11 @@ import java.lang.reflect.Constructor
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.lang.ref.WeakReference
 import java.util.Collections
 import java.util.WeakHashMap
 import kotlin.math.roundToInt
+import org.luckypray.dexkit.DexKitBridge
 
 /**
  * 侧边栏两列。
@@ -33,7 +35,8 @@ import kotlin.math.roundToInt
  *    同宽的兄弟 View（占位背景 abstract dock）一起加宽，否则图标会溢出背景；
  *    高度改为 WRAP_CONTENT，让面板随行数收缩（6 个图标从 6 行变 3 行）。
  *
- * 与「自动展开面板」互斥：全部应用面板展开时列数强制回到 1，面板关闭后恢复。
+ * 与「自动展开面板」互斥，且**只在竖屏**让位：全部应用面板展开时列数强制回到 1，
+ * 面板关闭后恢复；横屏横向空间充足，保持两列不动。
  * 判据是 DockLayout 的 `setBottomIconSelected(boolean)` —— 原生只在展开/收起
  * 全部应用面板时用它切换底部图标的选中态（模块自身的自动展开也走这个方法）。
  *
@@ -59,12 +62,6 @@ object SidebarColumnsHook : BaseHook() {
     private const val GRID_LAYOUT_MANAGER_CLASS = "androidx.recyclerview.widget.GridLayoutManager"
     private const val LINEAR_LAYOUT_MANAGER_CLASS = "androidx.recyclerview.widget.LinearLayoutManager"
 
-    // TurboLayout 上「box 面板」（视频工具箱 / 游戏工具箱）相关的成员名。
-    // 名字是 R8 产物，找不到就整段降级（只在两列时跳过面板回退），不影响其它功能。
-    private const val BOX_VIEW_FIELD = "Q"
-    private const val BOX_LOAD_METHOD = "j"
-    private const val BOX_ADD_METHOD = "m"
-
     /** 兜底 dp 值：与原生 dock_item_edge / dock_item_padding 一致。 */
     private const val FALLBACK_ITEM_EDGE_DP = 48f
     private const val FALLBACK_ITEM_PADDING_DP = 12f
@@ -85,8 +82,16 @@ object SidebarColumnsHook : BaseHook() {
     @Volatile private var turboWidthField: Field? = null
     @Volatile private var turboWidthFieldSearched = false
 
-    /** 原生单列宽度（px）。首次见到真实布局参数时记录，之后不再覆盖。 */
-    @Volatile private var baseWidthPx = 0
+    /**
+     * 每个 dock 实例自己的原生单列宽度；拿不到实例值时等待布局后重试。
+     *
+     * 只记进程级的一份是不够的：横竖屏切换后宿主重建 dock，原生宽度可能不同，
+     * 认旧值会让「旋转后第一次呼出」时算出来的 base 与实际布局对不上，
+     * 宽度改不动（下面的兄弟节点遍历会整片跳过）而列数照切两列 —— 挤成一团。
+     */
+    private val nativeDockWidths = Collections.synchronizedMap(WeakHashMap<View, Int>())
+    /** 我们写给每个 View 的宽度，用来把"自己改过的"和"原生的"区分开。 */
+    private val appliedWidths = Collections.synchronizedMap(WeakHashMap<View, Int>())
     /** 每个侧边栏实例在原生状态下的高度，用于切回单列时还原。 */
     private val nativeHeights = Collections.synchronizedMap(WeakHashMap<View, Int>())
     /** 侧边栏列表（RecyclerView）在原生状态下的高度，同上。 */
@@ -102,24 +107,15 @@ object SidebarColumnsHook : BaseHook() {
     /** 全部应用面板是否处于展开态。 */
     @Volatile private var allAppsPanelOpen = false
 
-    /**
-     * 当前挂着「box 面板」（视频工具箱 / 游戏工具箱）的 TurboLayout -> 面板 View。
-     *
-     * 不能用「侧边栏 open 时重置」这种按调用顺序推断的办法：实测 open 会在
-     * `j()` 之后约 50ms 再次被调用，一重置就缩回两列，表现为抖动。
-     * 而宿主又从不 removeView（只做透明度动画，`removeView` 只用于背景 `n`），
-     * 没有「面板关闭」回调。因此只能按实例身份记账：面板还在某个 TurboLayout
-     * 上挂着就算在显示；TurboLayout 被摘出窗口（onDetachedFromWindow）时整条清掉。
-     */
-    private val boxPanelByTurbo = Collections.synchronizedMap(WeakHashMap<View, View>())
+    /** 仅用于当前 dock 的工具箱避让；弱引用避免面板的 parent 反向保活窗口。 */
+    private val boxPanels = Collections.synchronizedMap(WeakHashMap<View, WeakReference<View>>())
 
     /** 当前是否横屏；横屏横向空间充足，不需要为 box 面板让位。 */
     @Volatile private var landscape = false
 
     /** SpanSizeLookup（`GridLayoutManager$c`）的默认实现，以及它的 `getSpanSize` 钩子状态。 */
     @Volatile private var spanLookupInstalled = false
-    @Volatile private var spanLookupInstance: Any? = null
-    @Volatile private var spanLookupColumns = 1
+    private val spanLookupColumns = Collections.synchronizedMap(WeakHashMap<Any, Int>())
 
     override fun getTag() = TAG
 
@@ -153,6 +149,7 @@ object SidebarColumnsHook : BaseHook() {
 
         hookRecyclerView(module, loader)
         hookBoxPanel(module, turbo)
+        hookRotation(module, turbo)
         findDockLayoutClass(turbo)?.let { dock ->
             log(module, "dock=${dock.name}")
             hookDockConstructors(module, dock)
@@ -164,8 +161,6 @@ object SidebarColumnsHook : BaseHook() {
             open.isAccessible = true
             runCatching {
             module.hook(open).intercept { chain ->
-                // 这里不要重置 box 面板状态：面板的存亡由 boxPanelByTurbo 按实例记账，
-                // 按调用顺序推断会抖动（open 比 j() 晚约 50ms）。
                 val result = chain.proceed()
                 runCatching { findDockLayout(chain.args.firstOrNull(), turbo) }
                     .getOrNull()?.let { apply(module, it, converge = true) }
@@ -224,30 +219,45 @@ object SidebarColumnsHook : BaseHook() {
                 if (selfSetting.get() == true || self == null || !isDockRecycler(self)) {
                     return@intercept chain.proceed()
                 }
-                val columns = desiredColumns()
+                // 横竖屏直接决定要不要让位，进决策前必须先刷新（这里是主挂载点，
+                // 旋转后第一次 setLayoutManager 不能拿上一次的旧值）。
+                refreshOrientation(self)
                 val dock = dockOf(self)
-                if (columns > 1) {
-                    val grid = buildGrid(self.context, columns)
+                val wanted = desiredColumns(dock ?: self)
+                // 拿不到 dock、或宽度还落不下去时不能上两列：列表会被塞进
+                // 单列宽的面板里（旋转后第一次呼出最常见的就是这个）。
+                // 这里放原生走完，apply() 的收敛会把宽度落稳后再切两列。
+                val widthReady = dock != null && canWiden(dock) && applyPanelSize(module, dock, self, wanted)
+                if (wanted > 1 && widthReady && dock != null) {
+                    val grid = buildGrid(self.context, wanted)
                     if (grid != null) {
-                        installSpanLookup(module, grid, columns)
+                        installSpanLookup(module, grid, wanted)
                         val result = runCatching { chain.proceed(arrayOf<Any?>(grid)) }
-                            .getOrElse { chain.proceed() }
-                        appliedColumns[self] = columns
-                        if (dock != null) {
-                            appliedDocks.add(dock)
-                            applyPanelSize(module, dock, self, columns)
-                            dock.postDelayed({ applyPanelSize(module, dock, self, columns) }, CONVERGE_DELAY_MS)
-                        }
-                        log(module, "grid applied columns=$columns on ${self.javaClass.simpleName}")
+                            .getOrElse {
+                                appliedColumns.remove(self)
+                                val nativeResult = chain.proceed()
+                                apply(module, dock, converge = true)
+                                return@intercept nativeResult
+                            }
+                        appliedColumns[self] = wanted
+                        appliedDocks.add(dock)
+                        // 原生可能延后写回布局参数，再补一次完整 apply 收敛宽度与列数。
+                        dock.postDelayed({ apply(module, dock, converge = false) }, CONVERGE_DELAY_MS)
+                        log(module, "grid applied columns=$wanted on ${self.javaClass.simpleName}")
                         return@intercept result
                     }
                     logWarn(module, "grid manager build failed; keeping native layout")
+                } else if (wanted > 1) {
+                    log(module, "grid deferred columns=$wanted dock=${dock != null}")
                 }
+                val columns = if (wanted > 1) 1 else wanted
+                // 宿主重新装回 LinearLayoutManager 后，旧的「已是两列」记账失效。
+                appliedColumns.remove(self)
                 val result = chain.proceed()
                 if (dock != null) {
                     appliedDocks.add(dock)
                     apply(module, dock, converge = true)
-                } else {
+                } else if (columns <= 1) {
                     applyColumnCount(module, self, columns)
                 }
                 result
@@ -266,21 +276,39 @@ object SidebarColumnsHook : BaseHook() {
      * 让 TurboLayout 回到原生布局。
      *
      * 两个挂载点：
-     * - `j()`：视频工具箱 / 亮度 / 会话面板的加载入口，内部 `getTargetBox()` 后 addView，
-     *   box 实例落在字段 `Q` 上（取不到 box 时 `Q` 为 null，据此区分）；
-     * - `m(View, FrameLayout.LayoutParams)`：游戏工具箱 GridView 的添加入口。
+     * - DexKit 查找调用 `getTargetBox()` 的无参加载入口，通过 `getBoxView()` 取面板；
+     * - 按 `(View, FrameLayout.LayoutParams)` 唯一签名定位游戏工具箱添加入口。
      */
     private fun hookBoxPanel(module: XposedModule, turbo: Class<*>) {
-        val boxViewField = runCatching {
-            turbo.declaredFields.firstOrNull { it.name == BOX_VIEW_FIELD && it.type == View::class.java }
-        }.getOrNull()?.also { it.isAccessible = true }
-        val loadBox = runCatching { turbo.getDeclaredMethod(BOX_LOAD_METHOD) }.getOrNull()
-            ?.takeIf { it.returnType == Void.TYPE && it.parameterCount == 0 }
+        val boxGetter = runCatching { turbo.getMethod("getBoxView") }.getOrNull()
+        val loadBox = runCatching {
+            System.loadLibrary("dexkit")
+            DexKitBridge.create(turbo.classLoader, false).use { bridge ->
+                bridge.getClassData(turbo)?.findMethod {
+                    matcher {
+                        returnType("void")
+                        paramTypes()
+                        invokeMethods {
+                            add {
+                                declaredClass(turbo.name)
+                                name("getTargetBox")
+                                returnType("android.view.View")
+                                paramTypes()
+                            }
+                        }
+                    }
+                }?.mapNotNull { runCatching { it.getMethodInstance(turbo.classLoader) }.getOrNull() }
+                    ?.singleOrNull { !it.isSynthetic }
+            }
+        }.getOrNull()
         val frameParams = runCatching {
             Class.forName("android.widget.FrameLayout\$LayoutParams", false, turbo.classLoader)
         }.getOrNull()
         val addBox = frameParams?.let {
-            runCatching { turbo.getMethod(BOX_ADD_METHOD, View::class.java, it) }.getOrNull()
+            turbo.declaredMethods.singleOrNull { method ->
+                method.returnType == Void.TYPE && !method.isSynthetic &&
+                    method.parameterTypes.contentEquals(arrayOf(View::class.java, it))
+            }
         }
         if (loadBox == null && addBox == null) {
             logWarn(module, "box panel entry points unavailable; toolbox fallback disabled")
@@ -297,9 +325,9 @@ object SidebarColumnsHook : BaseHook() {
                         val box = if (method === addBox) {
                             chain.args.firstOrNull() as? View
                         } else {
-                            boxViewField?.get(self) as? View
+                            boxGetter?.invoke(self) as? View
                         } ?: return@runCatching
-                        val isNew = synchronized(boxPanelByTurbo) { boxPanelByTurbo.put(self, box) == null }
+                        val isNew = boxPanels.put(self, WeakReference(box))?.get() !== box
                         if (isNew) {
                             log(
                                 module,
@@ -314,40 +342,51 @@ object SidebarColumnsHook : BaseHook() {
             }.onFailure { logWarn(module, "box panel hook failed(${method.name}): ${it.message}") }
         }
         log(module, "box panel hooks installed load=${loadBox != null} add=${addBox != null}")
+    }
 
-        // 宿主隐藏 box 面板时不 removeView（只做透明度动画），没有可靠的「关闭」回调，
-        // 因此把 TurboLayout 被摘出窗口当作一次收尾：面板随窗口一起没了，可以恢复两列。
-        runCatching { turbo.getDeclaredMethod("onDetachedFromWindow") }.getOrNull()?.let { detach ->
-            detach.isAccessible = true
-            runCatching {
-                module.hook(detach).intercept { chain ->
-                    val self = chain.thisObject as? View
-                    if (self != null && synchronized(boxPanelByTurbo) { boxPanelByTurbo.remove(self) } != null) {
-                        log(module, "box panel cleared on turbo detach")
-                    }
-                    chain.proceed()
-                }
-            }.onFailure { logWarn(module, "turbo detach hook failed: ${it.message}") }
+    private fun hasBoxPanel(dock: View): Boolean {
+        val turbo = turboOf(dock) ?: return false
+        val box = boxPanels[turbo]?.get() ?: return false
+        var current: View? = box
+        while (current != null) {
+            if (!current.isAttachedToWindow || current.visibility != View.VISIBLE ||
+                current.windowVisibility != View.VISIBLE || current.alpha <= 0.01f
+            ) return false
+            if (current === turbo) return box.isShown
+            current = current.parent as? View
         }
+        return false
     }
 
     /**
-     * 是否还有 box 面板挂在某个 TurboLayout 上。
-     * 取值时顺手把已经不在视图树里的条目丢掉（`j()` 里 `Q` 被赋值但没走到 addView
-     * 的情况，面板其实没显示，不该压成单列）。
+     * 旋转后重新决策列数。
+     *
+     * 「竖屏开面板 → 转到横屏」这条路径上，宿主不一定会重新 `setLayoutManager`，
+     * 那样面板会一直停在单列。这里补一个刷新点：宿主没重写
+     * `onConfigurationChanged` 就整段跳过，靠重新布局兜底。
      */
-    private fun hasBoxPanel(): Boolean = synchronized(boxPanelByTurbo) {
-        val iterator = boxPanelByTurbo.entries.iterator()
-        var present = false
-        while (iterator.hasNext()) {
-            val entry = iterator.next()
-            if (entry.value.parent == null) {
-                iterator.remove()
-            } else {
-                present = true
-            }
+    private fun hookRotation(module: XposedModule, turbo: Class<*>) {
+        val method = runCatching { turbo.getDeclaredMethod("onConfigurationChanged", Configuration::class.java) }
+            .getOrNull()
+            ?: runCatching { turbo.getMethod("onConfigurationChanged", Configuration::class.java) }.getOrNull()
+        if (method == null) {
+            log(module, "no onConfigurationChanged on TurboLayout; rotation relies on relayout")
+            return
         }
-        present
+        runCatching {
+            method.isAccessible = true
+            module.hook(method).intercept { chain ->
+                val result = chain.proceed()
+                runCatching {
+                    val self = chain.thisObject as? View ?: return@runCatching
+                    refreshOrientation(self)
+                    dockLayoutOf(self, turbo)?.let { apply(module, it, converge = true) }
+                    log(module, "rotation applied landscape=$landscape panel=$allAppsPanelOpen")
+                }.onFailure { logWarn(module, "rotation apply failed: ${it.message}") }
+                result
+            }
+        }.onFailure { logWarn(module, "onConfigurationChanged hook failed: ${it.message}") }
+        log(module, "rotation hook installed")
     }
 
     private fun dockLayoutOf(turboView: View, turbo: Class<*>): View? =
@@ -386,8 +425,8 @@ object SidebarColumnsHook : BaseHook() {
             module.hook(method).intercept { chain ->
                 val selected = chain.args.firstOrNull() as? Boolean ?: return@intercept chain.proceed()
                 allAppsPanelOpen = selected
-                val result = chain.proceed()
                 val self = chain.thisObject as? View
+                val result = chain.proceed()
                 if (self != null) {
                     appliedDocks.add(self)
                     // 原生会在同一条流程里（例如 J() -> K()）再次写回高度，
@@ -437,25 +476,43 @@ object SidebarColumnsHook : BaseHook() {
         val view = dock as? View ?: return
         refreshOrientation(view)
         val recycler = findRecyclerView(view) ?: return
-        val columns = desiredColumns()
+        // 先落宽度再定列数：宽度没跟上就退回原生单列。反过来的话，旋转后第一次
+        // 呼出会拿到「单列宽度 + 两列图标」（dock 还没挂上 / 原生宽度变了，
+        // 宽度那一步会被整片跳过，而列数照切）。
+        //
+        // 注意宽度**无条件落一次**，不能只在 wanted > 1 时落：竖屏展开全部应用
+        // 面板时 wanted 直接就是 1，只在两列分支落宽度的话 dock 会一直停在
+        // 394px，表现为「图标回到单列、面板还是两列那么宽」。
+        val wanted = desiredColumns(view)
+        var columns = wanted
+        var sizeOk = applyPanelSize(module, view, recycler, columns)
+        if (wanted > 1 && !sizeOk) {
+            columns = 1
+            sizeOk = applyPanelSize(module, view, recycler, 1)
+            log(module, "two columns deferred: panel width not applied")
+        }
+        if (!sizeOk) logWarn(module, "panel width not applied for columns=$columns")
         applyColumnCount(module, recycler, columns)
-        applyPanelSize(module, view, recycler, columns)
         if (converge) {
-            view.postDelayed({ applyPanelSize(module, view, recycler, columns) }, CONVERGE_DELAY_MS)
+            view.postDelayed({ apply(module, view, converge = false) }, CONVERGE_DELAY_MS)
         }
     }
 
-    /** 当前应当生效的列数，供分割线宽度等处查询。 */
-    internal fun currentColumns(): Int = desiredColumns()
+    /** 列表实际已应用的列数，宽度尚未就绪时不能把目标两列当作已生效。 */
+    internal fun currentColumns(recycler: View): Int = appliedColumns[recycler] ?: 1
 
     /**
      * 目标列数。两个开关在设置页互斥，但导入备份配置可能绕过 UI，
      * 因此这里再兜一层：自动展开面板开着就不认两列。
+     *
+     * 两处让位都只发生在竖屏：
+     * - 全部应用面板展开（[allAppsPanelOpen]）：竖屏时 dock 加宽到 132dp 会挤压面板，
+     *   横屏横向空间充足，保持两列（用户明确要求）；
+     * - box 面板（游戏/视频工具箱）：自身宽度写死，横屏同样放得下。
      */
-    private fun desiredColumns(): Int {
-        if (allAppsPanelOpen) return 1
-        // 只有竖屏才需要为 box 面板让宽度：横屏横向空间本来就够。
-        if (!landscape && hasBoxPanel()) return 1
+    private fun desiredColumns(dock: View): Int {
+        if (!landscape && allAppsPanelOpen) return 1
+        if (!landscape && hasBoxPanel(dock)) return 1
         if (!ConfigManager.getBoolean(PREF_ENABLED, false)) return 1
         if (ConfigManager.getBoolean(PrefKeys.SIDEBAR_EXPAND_ALL_APPS, false)) return 1
         return COLUMN_COUNT
@@ -486,8 +543,8 @@ object SidebarColumnsHook : BaseHook() {
             logWarn(module, "span lookup classes unavailable; divider stays in one cell")
             return
         }
-        val getSpanSize = runCatching { defaultType.getMethod("f", Int::class.javaPrimitiveType) }.getOrNull()
-            ?: defaultType.methods.firstOrNull { method ->
+        val getSpanSize = defaultType.declaredMethods.singleOrNull { method ->
+                !Modifier.isStatic(method.modifiers) &&
                 method.returnType == Int::class.javaPrimitiveType && method.parameterCount == 1 &&
                     method.parameterTypes[0] == Int::class.javaPrimitiveType
             }
@@ -503,8 +560,8 @@ object SidebarColumnsHook : BaseHook() {
             getSpanSize.isAccessible = true
             runCatching {
                 module.hook(getSpanSize).intercept { chain ->
-                    val columnsNow = spanLookupColumns
-                    if (columnsNow <= 1 || chain.thisObject !== spanLookupInstance) {
+                    val columnsNow = spanLookupColumns[chain.thisObject] ?: 1
+                    if (columnsNow <= 1) {
                         return@intercept chain.proceed()
                     }
                     val position = chain.args.firstOrNull() as? Int ?: return@intercept chain.proceed()
@@ -514,8 +571,7 @@ object SidebarColumnsHook : BaseHook() {
             spanLookupInstalled = true
             log(module, "span lookup hooked ${defaultType.name}.${getSpanSize.name}")
         }
-        spanLookupInstance = instance
-        spanLookupColumns = columns
+        spanLookupColumns[instance] = columns
         runCatching {
             setter.isAccessible = true
             setter.invoke(grid, instance)
@@ -560,17 +616,20 @@ object SidebarColumnsHook : BaseHook() {
         landscape = config.orientation == Configuration.ORIENTATION_LANDSCAPE
     }
 
-    /** 面板尺寸：dock 及其同宽兄弟 View 一起加宽/还原，高度同步切换。 */
-    private fun applyPanelSize(module: XposedModule, dock: View, recycler: View?, columns: Int) {
-        val container = dock.parent as? ViewGroup ?: return
-        val context = dock.context ?: return
-        val base = recordBaseWidth(dock)
-        if (base <= 0) return
+    /**
+     * 面板尺寸：dock 及其同宽兄弟 View 一起加宽/还原，高度同步切换。
+     *
+     * @return 宽度是否已经按 [columns] 落到 dock 上。调用方要据此决定列数 ——
+     *         宽度没跟上却切了列数，就是两列图标挤在单列宽的面板里。
+     */
+    private fun applyPanelSize(module: XposedModule, dock: View, recycler: View?, columns: Int): Boolean {
+        val context = dock.context ?: return false
         val wide = targetWidth(context, COLUMN_COUNT)
+        val base = nativeWidthOf(dock, wide)
+        val dockParams = dock.layoutParams
+        if (base <= 0 || wide <= 0 || dockParams == null) return false
         val target = if (columns > 1) wide else base
-        if (target <= 0) return
 
-        val dockParams = dock.layoutParams ?: return
         // 只记录原生高度：此刻若已是 WRAP_CONTENT 说明两列正在生效，不能记成原生值。
         if (dockParams.height != ViewGroup.LayoutParams.WRAP_CONTENT) {
             nativeHeights[dock] ?: run { nativeHeights[dock] = dockParams.height }
@@ -582,20 +641,48 @@ object SidebarColumnsHook : BaseHook() {
         }
         applyListHeight(module, recycler, columns)
 
-        for (index in 0 until container.childCount) {
-            val child = container.getChildAt(index) ?: continue
-            val params = child.layoutParams ?: continue
-            if (params.width != base && params.width != wide) continue
-            val widthOk = params.width == target
-            val heightOk = child !== dock || wantedHeight == null || params.height == wantedHeight
-            if (widthOk && heightOk) continue
-            params.width = target
-            if (child === dock && wantedHeight != null) params.height = wantedHeight
-            runCatching { child.layoutParams = params }
-                .onFailure { logWarn(module, "panel size apply failed: ${it.message}") }
+        // dock 自己**无条件**改：宿主旋转后第一次呼出时它可能还没挂到 TurboLayout 上
+        // （`dock.parent == null`），只遍历兄弟节点会把宽度整片跳过，
+        // 而列数已经切到两列 —— 这就是「单列宽度 + 两列图标」。
+        var applied = dockParams.width == target
+        if (!applied) {
+            dockParams.width = target
+            applied = runCatching { dock.layoutParams = dockParams }.isSuccess
+            if (!applied) logWarn(module, "panel width apply failed (target=$target)")
         }
-        applyTurboWidthField(container, base, target)
-        log(module, "panel size columns=$columns base=${base}px target=${target}px")
+        if (wantedHeight != null && dockParams.height != wantedHeight) {
+            dockParams.height = wantedHeight
+            runCatching { dock.layoutParams = dockParams }
+                .onFailure { logWarn(module, "panel height apply failed: ${it.message}") }
+        }
+        appliedWidths[dock] = target
+
+        val container = dock.parent as? ViewGroup
+        var siblings = 0
+        if (container != null) {
+            for (index in 0 until container.childCount) {
+                val child = container.getChildAt(index) ?: continue
+                if (child === dock) continue
+                val params = child.layoutParams ?: continue
+                val current = params.width
+                // 只动「宽度跟 dock 原生宽度一致」或「我们之前已经动过」的兄弟节点，
+                // 免得把 box 面板之类写死宽度的东西一起改掉。
+                if (current != base && current != wide && current != appliedWidths[child]) continue
+                if (current == target) continue
+                params.width = target
+                appliedWidths[child] = target
+                runCatching { child.layoutParams = params }
+                    .onSuccess { siblings++ }
+                    .onFailure { logWarn(module, "panel size apply failed: ${it.message}") }
+            }
+            applyTurboWidthField(container, base, target)
+        }
+        log(
+            module,
+            "panel size columns=$columns base=${base}px target=${target}px " +
+                "dockWidth=${dock.layoutParams?.width} siblings=$siblings container=${container != null}",
+        )
+        return applied
     }
 
     /**
@@ -664,6 +751,18 @@ object SidebarColumnsHook : BaseHook() {
             val parent = current.parent as? View ?: return null
             if (turbo.isInstance(parent)) return current
             current = parent
+        }
+        return null
+    }
+
+    /** 从任意子 View 往上找到 TurboLayout 实例。 */
+    private fun turboOf(view: View): View? {
+        val turbo = turboClass ?: return null
+        var current: View? = view
+        var depth = 0
+        while (current != null && depth++ < MAX_PARENT_DEPTH) {
+            if (turbo.isInstance(current)) return current
+            current = current.parent as? View
         }
         return null
     }
@@ -765,14 +864,29 @@ object SidebarColumnsHook : BaseHook() {
     // ── 尺寸计算 ──────────────────────────────────────────────────────────────
 
     /** 记录并返回原生单列宽度（px）。只记录一次，且只在看到真实像素值时记录。 */
-    private fun recordBaseWidth(dock: View): Int {
-        val recorded = baseWidthPx
-        if (recorded > 0) return recorded
+    private fun nativeWidthOf(dock: View, wide: Int): Int {
+        nativeDockWidths[dock]?.takeIf { it > 0 }?.let { return it }
         val width = dock.layoutParams?.width ?: 0
+        // 我们自己写进去的宽度（以及两列的目标宽度）都不是原生值，不能记。
+        if (width > 0 && width != wide && width != appliedWidths[dock]) {
+            nativeDockWidths[dock] = width
+            return width
+        }
+        // 实例尚未提供原生宽度时等待下一次布局，不能借用旋转前其它 dock 的值。
+        return 0
+    }
+
+    /**
+     * 宽度现在能不能落下去。
+     *
+     * 列数切换**必须**先过这一关：拿不到原生宽度（dock 还没 inflate 完、布局参数
+     * 尚不可用）时就把两列塞进单列宽的面板，就是「旋转后第一次呼出挤成一团」。
+     */
+    private fun canWiden(dock: View): Boolean {
         val wide = dock.context?.let { targetWidth(it, COLUMN_COUNT) } ?: 0
-        if (width <= 0 || (wide > 0 && width == wide)) return 0
-        baseWidthPx = width
-        return width
+        if (wide <= 0) return false
+        if (dock.layoutParams == null) return false
+        return nativeWidthOf(dock, wide) > 0
     }
 
     /**

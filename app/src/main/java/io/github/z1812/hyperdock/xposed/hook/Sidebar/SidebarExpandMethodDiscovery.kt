@@ -1,37 +1,37 @@
 package io.github.z1812.hyperdock.xposed.hook.Sidebar
 
-import android.view.View
 import android.view.ViewGroup
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import org.luckypray.dexkit.DexKitBridge
 
+/** 根据全部应用面板的创建调用定位展开入口，不依赖混淆名或反射枚举顺序。 */
 internal object SidebarExpandMethodDiscovery {
-    fun noArg(clazz: Class<*>, vararg names: String): Method? = names.firstNotNullOfOrNull {
-        runCatching { clazz.getDeclaredMethod(it) }.getOrNull()
-    }
+    private val expansions = HashMap<Class<*>, Method?>()
 
-    fun noArgVoid(clazz: Class<*>, vararg names: String): Method? =
-        noArg(clazz, *names)?.takeIf { it.returnType == Void.TYPE }
-
-    fun expansion(clazz: Class<*>): Method? = clazz.declaredMethods.filter {
-        it.returnType == Void.TYPE && it.parameterCount == 0 &&
-            Modifier.isPublic(it.modifiers) && !it.isSynthetic && it.name.length <= 2
-    }.lastOrNull()
-
-    fun sixIntVoid(clazz: Class<*>): Method? = clazz.declaredMethods.firstOrNull {
-        it.returnType == Void.TYPE && it.parameterCount == 6 &&
-            it.parameterTypes.all { type -> type == Int::class.javaPrimitiveType }
-    }
-
-    fun create(clazz: Class<*>): Method? = clazz.declaredMethods.firstOrNull {
-        it.returnType == Void.TYPE && it.parameterCount == 0 &&
-            Modifier.isPublic(it.modifiers) && !it.isSynthetic && it.name.length <= 2
-    }
-
-    fun appAddHelper(type: Class<*>): Boolean = type.declaredMethods.any { method ->
-        method.parameterCount == 3 &&
-            ViewGroup::class.java.isAssignableFrom(method.parameterTypes[0]) &&
-            View::class.java.isAssignableFrom(method.parameterTypes[1]) &&
-            ViewGroup.LayoutParams::class.java.isAssignableFrom(method.parameterTypes[2])
+    fun expansion(clazz: Class<*>): Method? = synchronized(expansions) {
+        if (expansions.containsKey(clazz)) return expansions[clazz]
+        val loader = clazz.classLoader
+        val result = runCatching {
+            val panelType = clazz.declaredFields.map { it.type }.singleOrNull { type ->
+                ViewGroup::class.java.isAssignableFrom(type) &&
+                    type.packageName == "com.miui.dock.allapps"
+            } ?: return@runCatching null
+            System.loadLibrary("dexkit")
+            DexKitBridge.create(loader, false).use { bridge ->
+                bridge.getClassData(clazz)?.findMethod {
+                    matcher {
+                        returnType("void")
+                        paramTypes()
+                        invokeMethods {
+                            add { declaredClass(panelType.name); name("<init>") }
+                        }
+                    }
+                }?.mapNotNull { runCatching { it.getMethodInstance(loader) }.getOrNull() }
+                    ?.singleOrNull { Modifier.isPublic(it.modifiers) && !it.isSynthetic }
+            }
+        }.getOrNull()
+        expansions[clazz] = result
+        result
     }
 }

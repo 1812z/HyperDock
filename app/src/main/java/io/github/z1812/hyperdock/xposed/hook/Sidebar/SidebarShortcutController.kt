@@ -1218,8 +1218,9 @@ internal object SidebarShortcutController {
         installStateReceiver()
         val imageView = runCatching { shortcutIconViewField?.get(findFieldOwner(holder)) as? ImageView }.getOrNull()
             ?: findImageView(holder)
-            ?: return
-        val quickInfo = quickInfoFromModel(model) ?: return
+            ?: run { logNow("icon bind skipped: no image view on ${holder.javaClass.name}"); return }
+        val quickInfo = quickInfoFromModel(model)
+            ?: run { logNow("icon bind skipped: no quick info on ${model.javaClass.name}"); return }
         val componentId = quickInfoId(quickInfo).removePrefix(ID_PREFIX)
         val isQuickLaunch = QuickLaunchFormat.isQuickLaunch(componentId)
         val payload = quickLaunchPayload(componentId)
@@ -1244,6 +1245,15 @@ internal object SidebarShortcutController {
         val enabled = tileState[componentId] == true
         val colorIcon = colorIconEnabled(componentId)
         tileViews[componentId] = imageView
+        // 图标到底走的哪条路（自定义 URI / 应用图标 / 模块兜底），排错时只看这一行就够。
+        // 注意：必须走 module.log —— 裸 Log.d 不会进 LSPosed 的日志。
+        logNow(
+            "icon bound id=$componentId quickLaunch=$isQuickLaunch " +
+                "uri=${if (isQuickLaunch) quickInfoValue(quickInfo, 1) else customUri} " +
+                "resolved=${drawable?.javaClass?.simpleName} " +
+                "styled=${if (isQuickLaunch) "quickLaunch" else "tile"} " +
+                "view=${System.identityHashCode(imageView)} attached=${imageView.isAttachedToWindow}"
+        )
         if (isQuickLaunch) {
             styleQuickLaunchIcon(imageView, drawable)
         } else {
@@ -1261,7 +1271,7 @@ internal object SidebarShortcutController {
             }?.invoke(holder) as? View
         }.getOrNull() ?: findItemView(holder) ?: return
         val context = itemView.context
-        Log.i(TAG, "install click listener holder=${holder.javaClass.name} id=${quickInfoFromModel(model)?.let(::quickInfoId)}")
+        logNow("install click listener holder=${holder.javaClass.name} id=${quickInfoFromModel(model)?.let(::quickInfoId)}")
         bindInjectedIcon(holder, model)
         val click = View.OnClickListener {
             Log.i(TAG, "direct shortcut view clicked")
@@ -1311,16 +1321,31 @@ internal object SidebarShortcutController {
     private fun findFieldOwner(instance: Any): Any = instance
 
     /**
+     * 取目标包的上下文，并把它**自己的主题**套上去。
+     *
+     * `createPackageContext` 出来的 Context 带的是「按 targetSdk 选的默认主题」，
+     * 直接用它解析图标会把图标 XML 里的 `?attr/...` 按默认主题求值 —— 图标本体
+     * 若是矢量图或带主题色，画出来就是一坨灰。套上 `applicationInfo.theme`
+     * （目标包自己声明的主题）后才是它本来的颜色。
+     *
+     * 拿不到主题（绝大多数普通应用）时行为与之前完全一致。
+     */
+    private fun packageContextOf(context: android.content.Context, pkg: String): android.content.Context? =
+        runCatching {
+            val packageContext = context.createPackageContext(pkg, android.content.Context.CONTEXT_IGNORE_SECURITY)
+            val theme = runCatching { packageContext.applicationInfo?.theme }.getOrNull() ?: 0
+            if (theme != 0) runCatching { packageContext.setTheme(theme) }
+            packageContext
+        }.getOrNull()
+
+    /**
      * 从模块 APK 里按资源名取 drawable。
      *
      * 安全中心的 AssetManager 没有加载模块的资源表，`getIdentifier(name, type, pkg)`
      * 必须建立在 [Context.createPackageContext] 出来的上下文上，否则永远返回 0。
      */
     private fun moduleDrawable(context: Context, name: String): Drawable? = runCatching {
-        val packageContext = context.createPackageContext(
-            SystemTileCatalogProtocol.MODULE_PKG,
-            Context.CONTEXT_IGNORE_SECURITY,
-        )
+        val packageContext = packageContextOf(context, SystemTileCatalogProtocol.MODULE_PKG) ?: return null
         val resId = packageContext.resources.getIdentifier(name, "drawable", packageContext.packageName)
         if (resId == 0) null else packageContext.getDrawable(resId)
     }.getOrNull()
@@ -1332,10 +1357,7 @@ internal object SidebarShortcutController {
             val info = context.packageManager.getServiceInfo(component, 0)
             val iconRes = if (info.icon != 0) info.icon else info.applicationInfo?.icon ?: 0
             if (iconRes == 0) return@runCatching null
-            val packageContext = context.createPackageContext(
-                info.packageName,
-                android.content.Context.CONTEXT_IGNORE_SECURITY,
-            )
+            val packageContext = packageContextOf(context, info.packageName) ?: return@runCatching null
             packageContext.resources.getDrawable(iconRes, packageContext.theme)
         }.getOrNull()
     }
@@ -1346,10 +1368,7 @@ internal object SidebarShortcutController {
             val info = context.packageManager.getActivityInfo(component, 0)
             val iconRes = info.applicationInfo?.icon ?: 0
             if (iconRes == 0) return@runCatching null
-            val packageContext = context.createPackageContext(
-                info.packageName,
-                android.content.Context.CONTEXT_IGNORE_SECURITY,
-            )
+            val packageContext = packageContextOf(context, info.packageName) ?: return@runCatching null
             packageContext.resources.getDrawable(iconRes, packageContext.theme)
         }.getOrNull()
     }
@@ -1364,10 +1383,8 @@ internal object SidebarShortcutController {
                     val resourcePackage = parsed.authority ?: return@runCatching null
                     val resourceId = parsed.pathSegments.lastOrNull()?.toIntOrNull()
                         ?: return@runCatching null
-                    val packageContext = context.createPackageContext(
-                        resourcePackage,
-                        android.content.Context.CONTEXT_IGNORE_SECURITY,
-                    )
+                    val packageContext = packageContextOf(context, resourcePackage)
+                        ?: return@runCatching null
                     packageContext.getDrawable(resourceId)
                 }
                 uri.startsWith("content://") || uri.startsWith("file://") -> {
@@ -1408,7 +1425,7 @@ internal object SidebarShortcutController {
                     val res = if (pkg == "android") {
                         context.resources
                     } else {
-                        context.createPackageContext(pkg, Context.CONTEXT_IGNORE_SECURITY).resources
+                        packageContextOf(context, pkg)?.resources ?: return@runCatching null
                     }
                     val resId = res.getIdentifier(name, "drawable", pkg)
                     if (resId == 0) null else res.getDrawable(resId, null)
@@ -1626,6 +1643,10 @@ internal object SidebarShortcutController {
         if (adapter != null && adapterTarget != null) {
             runCatching { adapter.invoke(adapterTarget, native) }
         }
+    }
+
+    private fun logNow(message: String) {
+        ConfigManager.module()?.let { log(it, message) }
     }
 
     private fun installConfigChangeListener() {
