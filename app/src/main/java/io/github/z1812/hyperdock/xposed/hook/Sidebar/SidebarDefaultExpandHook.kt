@@ -42,24 +42,6 @@ object SidebarDefaultExpandHook : BaseHook() {
     private val silentHookInstalled = AtomicBoolean(false)
     private val retainedPanelFields = Collections.synchronizedMap(WeakHashMap<Class<*>, Field>())
 
-    /**
-     * 已初始化面板的进程级缓存：**按深色态分桶**，最多两份（浅色 / 深色）。
-     *
-     * 分桶而不是只留一份，是因为面板配色只在构建时定（换 Context 的 `uiMode`），
-     * 而"该用哪套配色"会随两件事变：系统深色模式切换、游戏/视频工具箱出现消失。
-     * 只留一份的话，每次切换都得作废重建 —— 而 `hasBoxPanel()` 还会随侧边栏窗口
-     * 重建来回抖动（旧 box 条目被剪掉→false、新 box 挂上→true），实测 8 秒内
-     * 重建了 3 次。分桶之后切换只是"换一份"，抖动完全无害。
-     *
-     * 宿主不就地处理横竖屏切换（TurboLayout 没有 `onConfigurationChanged`），旋转时
-     * 整条侧边栏窗口连同 TurboLayout 一起重建；缓存是进程级的，新 TurboLayout 建好
-     * 后由 [adoptRetainedPanel] 把对应那份过户回宿主字段，让原生 `W()` 继续复用。
-     */
-    private val retainedPanels = Collections.synchronizedMap(HashMap<Boolean, View>())
-
-    /** 侧边栏 wrapper 的类型（`openMethod` 的第一个参数），用于把面板重新绑到新窗口。 */
-    @Volatile private var wrapperClass: Class<*>? = null
-
     override fun getTag() = TAG
 
     override fun onInit(module: XposedModule, param: PackageLoadedParam) {
@@ -76,24 +58,14 @@ object SidebarDefaultExpandHook : BaseHook() {
             return
         }
         openMethod.isAccessible = true
-        val wrapperType = openMethod.parameterTypes[0]
-        wrapperClass = wrapperType
         log(module, "hooking normal sidebar ${openMethod.declaringClass.name}.${openMethod.name}")
-        hookWrapperPreload(module, wrapperType)
-        hookPanelReleaseWithDexKit(module, classLoader, wrapperType)
+        hookWrapperPreload(module, openMethod.parameterTypes[0])
+        hookPanelReleaseWithDexKit(module, classLoader, openMethod.parameterTypes[0])
         module.hook(openMethod).intercept { chain ->
             val opening = chain.args.getOrNull(1) as? Boolean ?: false
             sidebarOpen.set(opening)
             if (opening && ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)) {
-                chain.args.firstOrNull()?.let { wrapper ->
-                    findRootView(wrapper)?.visibility = View.VISIBLE
-                    val turbo = findPanelLayout(wrapper)
-                    // 工具箱（深色）出现/消失后，缓存里的面板配色是旧的，按需换一份。
-                    syncPanelTheme(module, turbo, wrapper)
-                    // 旋转后宿主换了 TurboLayout，面板字段是空的：先把保留下来的
-                    // 面板过户过去，原生展开入口 W() 才会复用它而不是重新构建。
-                    if (turbo != null) adoptRetainedPanel(module, turbo, wrapper)
-                }
+                chain.args.firstOrNull()?.let { findRootView(it)?.visibility = View.VISIBLE }
             }
             val result = chain.proceed()
             if (opening && ConfigManager.getBoolean(PREF_ENABLED, false)) {
@@ -120,19 +92,9 @@ object SidebarDefaultExpandHook : BaseHook() {
             constructor.isAccessible = true
             module.hook(constructor).intercept { chain ->
                 val result = chain.proceed()
-                val owner = chain.thisObject
-                findRootView(owner)?.post {
-                    val turbo = findPanelLayout(owner) ?: return@post
-                    // 面板预加载独立于「自动展开」：即使不做静默展开，也要装上面板
-                    // 加入钩子，否则拿不到面板实例，缓存与过户都无从谈起。
-                    val cache = ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)
-                    if (ConfigManager.getBoolean(PREF_ENABLED, false) || cache) {
-                        preparePanelHooks(module, turbo)
-                    }
-                    if (cache) {
-                        // 系统深色态/工具箱变了的话，缓存里的面板配色是旧的，按需换一份。
-                        syncPanelTheme(module, turbo, owner)
-                        adoptRetainedPanel(module, turbo, owner)
+                findRootView(chain.thisObject)?.post {
+                    if (ConfigManager.getBoolean(PREF_ENABLED, false)) {
+                        findPanelLayout(chain.thisObject)?.let { preparePanelHooks(module, it) }
                     }
                 }
                 result
@@ -169,10 +131,6 @@ object SidebarDefaultExpandHook : BaseHook() {
         if (!ConfigManager.getBoolean(PREF_ENABLED, false)) {
             silentAdd.set(false)
         }
-        if (!ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)) {
-            // 关掉预加载就不要再攥着面板（它们连带引用着 wrapper 与旧窗口）。
-            synchronized(retainedPanels) { retainedPanels.clear() }
-        }
     }
 
     private fun isUiProcess(packageName: String, processName: String): Boolean {
@@ -197,15 +155,8 @@ object SidebarDefaultExpandHook : BaseHook() {
         log(module, "hooking ${helper.name}.${method.name}")
         method.isAccessible = true
         module.hook(method).intercept { chain ->
-            val view = chain.args.getOrNull(1) as? View
-            // 无论静默与否都要记账：这是「已初始化面板」唯一的构造后入口。
-            if (view != null) {
-                // 复用成功时宿主加入的就是我们过户过去的那一份；
-                // 为 false 说明宿主重新构建了一次（旋转后没兜住就是这里）。
-                log(module, "all apps panel add: reused=${retainedPanels.values.any { it === view }}")
-                rememberPanel(view)
-            }
-            if (!silentAdd.get() || view == null) return@intercept chain.proceed()
+            if (!silentAdd.get()) return@intercept chain.proceed()
+            val view = chain.args.getOrNull(1) as? View ?: return@intercept chain.proceed()
             // Keep the native add path: it binds the adapter, click listener,
             // ViewModel and TurboLayout state. Only normalize its visual state
             // after the real hierarchy operation has completed.
@@ -311,13 +262,6 @@ object SidebarDefaultExpandHook : BaseHook() {
             autoExpanding.set(false)
             silentAdd.set(previous)
         }
-        // 走的是原生重建分支：把新建出来的这份记下来，下次旋转还能过户。
-        runCatching {
-            findPanelField(target)?.let { field ->
-                field.isAccessible = true
-                (field.get(target) as? View)?.let { rememberPanel(it) }
-            }
-        }
     }
 
     private fun findPanelField(target: Any): Field? {
@@ -337,161 +281,6 @@ object SidebarDefaultExpandHook : BaseHook() {
             current.declaredFields.forEach { yield(it) }
             current = current.superclass
         }
-    }
-
-    /** 记下这一份已初始化的面板（按它实际的深色态分桶），供后续复用/过户。 */
-    private fun rememberPanel(panel: View) {
-        if (!ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)) return
-        // 只认宿主真正的面板类型（由 DexKit 的释放方法反向定位出来的那一个），
-        // 免得把 dock 或其它加入动作里的 View 记成面板。
-        val type = panelType() ?: return
-        if (!type.isInstance(panel)) return
-        retainedPanels[SidebarAllAppsDarkHook.isNightContext(panel.context)] = panel
-    }
-
-    /** 宿主「全部应用」面板的类型；拿不到就说明释放钩子没装上，缓存无从谈起。 */
-    private fun panelType(): Class<*>? =
-        synchronized(retainedPanelFields) { retainedPanelFields.values.firstOrNull()?.type }
-
-    private fun detach(panel: View) =
-        runCatching { (panel.parent as? ViewGroup)?.removeView(panel) }.isSuccess
-
-    /** 这份面板是不是还挂在某个仍在显示的窗口上（那就不能抢）。 */
-    private fun onScreen(panel: View): Boolean {
-        val parent = panel.parent
-        return parent is View && parent.isAttachedToWindow
-    }
-
-    /**
-     * 让宿主的面板字段指向「与当前深色态匹配的那一份缓存面板」。
-     *
-     * 匹配的那份还没有缓存时，把不匹配的那份摘掉并清空字段，让宿主重新构建 ——
-     * 构建出来会被 [rememberPanel] 记进对应桶，下次就命中了。
-     */
-    internal fun syncPanelTheme(module: XposedModule, turbo: Any?, wrapper: Any? = null) {
-        if (!ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)) return
-        val target = turbo ?: return
-        val field = findPanelField(target) ?: return
-        field.isAccessible = true
-        val expected = SidebarAllAppsDarkHook.expectedNightState()
-        val wanted = retainedPanels[expected]
-        val current = runCatching { field.get(target) as? View }.getOrNull()
-        val state = "${if (expected) "dark" else "light"} | ${SidebarAllAppsDarkHook.expectedNightDetail()}"
-        if (wanted == null) {
-            // 没有这一态的缓存：当前那份配色不对就让它重建（只有真正不匹配才动，
-            // 避免和 hasBoxPanel() 的抖动一起把面板反复重建）。
-            if (current != null && SidebarAllAppsDarkHook.isNightContext(current.context) != expected) {
-                detach(current)
-                runCatching { field.set(target, null) }
-                log(module, "panel ${if (expected) "dark" else "light"} not cached; rebuilding | $state")
-            }
-            return
-        }
-        if (current === wanted && wanted.parent != null) return
-        if (onScreen(wanted)) {
-            log(module, "cached ${if (expected) "dark" else "light"} panel still on screen; keep current")
-            return
-        }
-        detach(wanted)
-        if (current != null && current !== wanted) detach(current)
-        if (runCatching { field.set(target, wanted) }.isSuccess) {
-            normalizePanelTransform(wanted)
-            // 这份缓存面板可能是上一个侧边栏窗口构建的，内部还攥着旧 wrapper。
-            // 换到当前 turbo 上时必须重新绑，否则它的回调会打在被丢弃的旧窗口上。
-            if (wrapper != null) rebindWrapper(wanted, wrapper)
-            log(module, "panel switched to cached ${if (expected) "dark" else "light"} instance | $state")
-            rebindInjectedIcons(wanted)
-        }
-    }
-
-    /**
-     * 缓存面板重新上屏后，让注入条目的图标再绑一次。
-     *
-     * 面板复用时宿主不会重新提交列表，图标只有首轮绑定那一次机会；那一轮若早于
-     * 图标资源就绪（跨包取图标 / 系统磁贴目录异步到达）就只剩占位图，必须点一下
-     * 或再开一次面板才补得上。`SidebarShortcutController.refreshPanelIcons` 内部
-     * 有节流，多次调用无害。用 post 是等面板真正挂到窗口上再重绑。
-     */
-    private fun rebindInjectedIcons(panel: View) {
-        runCatching { SidebarShortcutController.requestIconRebind(panel) }
-    }
-
-    /**
-     * 把缓存里匹配当前深色态的那份面板过户到 [turbo] 的面板字段上。
-     *
-     * 旋转后宿主重建侧边栏窗口，新的 TurboLayout 面板字段是 null，原生展开入口
-     * `W()` 会重新构建面板（日志里表现为 `AllAppsDark | panel ctor`）。这里先把
-     * 缓存的面板写回字段并重新绑定到当前 wrapper，`W()` 就会走「复用已有面板」
-     * 的分支而不是重新 inflate。
-     *
-     * 失败一律静默放弃，回退到原生重建，不影响任何既有行为。
-     */
-    private fun adoptRetainedPanel(module: XposedModule, turbo: Any, wrapper: Any) {
-        val panel = retainedPanels[SidebarAllAppsDarkHook.expectedNightState()] ?: return
-        val field = findPanelField(turbo) ?: return
-        // 旧窗口还挂在屏幕上的时候不能抢：那份面板还在被使用。
-        val parent = panel.parent
-        if (parent is View && parent.isAttachedToWindow) {
-            log(module, "panel adopt skipped: previous panel still on screen")
-            return
-        }
-        val current = runCatching { field.isAccessible = true; field.get(turbo) }.getOrNull()
-        if (current != null) return
-        if (parent is ViewGroup) {
-            val removed = runCatching { parent.removeView(panel) }.isSuccess
-            if (!removed || panel.parent != null) {
-                logWarn(module, "panel adopt failed: cannot detach from previous container")
-                return
-            }
-        }
-        val rebound = rebindWrapper(panel, wrapper)
-        if (!runCatching { field.set(turbo, panel) }.isSuccess) {
-            logWarn(module, "panel adopt failed: panel field not writable")
-            return
-        }
-        normalizePanelTransform(panel)
-        log(
-            module,
-            "panel adopted into new turbo panel=${panel.javaClass.name} " +
-                "detached=${parent != null} wrapperRebound=$rebound"
-        )
-        rebindInjectedIcons(panel)
-    }
-
-    /**
-     * 面板对象自己持有侧边栏 wrapper（发现面板字段时就是靠「存在无参方法返回
-     * wrapper」认出来的）。过户到新窗口后必须把它重新指向当前 wrapper，
-     * 否则面板的回调会打在已经被丢弃的旧窗口上。
-     */
-    private fun rebindWrapper(panel: View, wrapper: Any): Boolean {
-        val type = wrapperClass ?: return false
-        runCatching {
-            panel.javaClass.declaredMethods.firstOrNull { method ->
-                method.parameterCount == 1 && method.parameterTypes[0] == type
-            }?.let { method ->
-                method.isAccessible = true
-                method.invoke(panel, wrapper)
-                return true
-            }
-        }
-        runCatching {
-            allFields(panel.javaClass).firstOrNull { it.type == type }?.let { field ->
-                field.isAccessible = true
-                field.set(panel, wrapper)
-                return true
-            }
-        }
-        return false
-    }
-
-    /** 清掉上一次收起动画留下的位移/透明度，避免复用时面板是隐形的。visibility 不动。 */
-    private fun normalizePanelTransform(panel: View) {
-        panel.animate().cancel()
-        panel.alpha = 1f
-        panel.scaleX = 1f
-        panel.scaleY = 1f
-        panel.translationX = 0f
-        panel.translationY = 0f
     }
 
     private fun restorePanelVisibility(panel: View) {
@@ -516,12 +305,9 @@ object SidebarDefaultExpandHook : BaseHook() {
         }
     }
 
-    /** TurboLayout's All Apps attach entry is W() on the current host build. */
+    /** 根据面板构造调用定位原生全部应用展开入口。 */
     private fun findNativePanelExpandMethod(clazz: Class<*>): Method? {
-        return runCatching { clazz.getDeclaredMethod("W") }
-            .getOrNull()
-            ?.takeIf { it.returnType == Void.TYPE && it.parameterCount == 0 }
-            ?: SidebarExpandMethodDiscovery.expansion(clazz)
+        return SidebarExpandMethodDiscovery.expansion(clazz)
     }
 
     private fun setDockExpanded(dockLayout: Any) {
@@ -628,27 +414,10 @@ object SidebarDefaultExpandHook : BaseHook() {
                 module.hook(release).intercept { chain ->
                     val cacheEnabled = ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)
                     if (!cacheEnabled || autoExpanding.get() || sidebarOpen.get()) {
-                        if (cacheEnabled) {
-                            // 面板要被原生销毁了，再留着就是一份死面板。
-                            runCatching {
-                                val dying = panelField.get(chain.thisObject) as? View
-                                if (dying != null) {
-                                    synchronized(retainedPanels) {
-                                        retainedPanels.entries.removeAll { it.value === dying }
-                                    }
-                                }
-                            }
-                            log(
-                                module,
-                                "panel release runs (autoExpanding=${autoExpanding.get()} " +
-                                    "sidebarOpen=${sidebarOpen.get()}); cache dropped"
-                            )
-                        }
                         return@intercept chain.proceed()
                     }
                     val panel = panelField.get(chain.thisObject)
                     if (panel == null) return@intercept chain.proceed()
-                    if (panel is View) rememberPanel(panel)
                     // On the next open, TurboLayout.R() can run before the
                     // sidebar open dispatcher. At that point the cached panel
                     // is already detached (parent=null). Let native R() run so

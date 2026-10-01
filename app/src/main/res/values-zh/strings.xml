@@ -66,8 +66,6 @@
     <string name="shortcuts">快捷方式</string>
     <string name="shortcuts_summary">在全部应用面板与侧边栏展示自定义快捷方式</string>
     <string name="sidebar_auto_close">点击后自动收起侧边栏</string>
-    <string name="sidebar_all_apps_dark_sync">侧边栏深色时同步全部应用面板</string>
-    <string name="sidebar_all_apps_dark_sync_summary">打开游戏工具箱、视频工具箱等使侧边栏变深时，全部应用面板也以深色构建，效果与系统进入深色模式完全一致。面板打开时生效。</string>
     <string name="sidebar_auto_close_summary">选择哪些条目点击后自动收起侧边栏</string>
     <string name="sidebar_auto_close_off">不自动收起</string>
     <string name="sidebar_auto_close_shortcuts">仅内置快捷方式</string>

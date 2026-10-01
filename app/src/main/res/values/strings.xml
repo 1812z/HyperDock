@@ -69,8 +69,6 @@
     <string name="shortcuts">Shortcuts</string>
     <string name="shortcuts_summary">Show custom shortcuts in the all-apps panel and dock</string>
     <string name="sidebar_auto_close">Auto-collapse after tap</string>
-    <string name="sidebar_all_apps_dark_sync">Dark all-apps panel with the sidebar</string>
-    <string name="sidebar_all_apps_dark_sync_summary">Build the all-apps panel in dark mode while the sidebar is dark (game toolbox, video toolbox…), exactly as it looks when the system dark theme is on. Applied when the panel opens.</string>
     <string name="sidebar_auto_close_summary">Which injected entries collapse the sidebar after being tapped.</string>
     <string name="sidebar_auto_close_off">Never</string>
     <string name="sidebar_auto_close_shortcuts">Built-in shortcuts only</string>

@@ -47,13 +47,6 @@ object PrefKeys {
     const val AUTO_CLOSE_SHORTCUTS = "shortcuts"
     const val AUTO_CLOSE_QUICK_LAUNCH = "quick_launch"
     const val AUTO_CLOSE_ALL = "all"
-    /**
-     * 侧边栏进入深色时（挂着游戏工具箱 / 视频工具箱这类 box 面板），
-     * 是否把「全部应用」面板一起构建成深色 —— 效果与系统进入深色模式完全一致。
-     * 只在面板创建时生效，默认关闭。
-     */
-    const val SIDEBAR_ALL_APPS_DARK_SYNC = "sidebar_all_apps_dark_sync"
-
     const val ALL_APPS_CUSTOM_ENABLED = "all_apps_custom_enabled"
     const val ALL_APPS_CUSTOM_MODE = "all_apps_custom_mode"
     const val ALL_APPS_CUSTOM_PACKAGES = "all_apps_custom_packages"
@@ -106,7 +99,6 @@ object PrefKeys {
         SIDEBAR_TWO_COLUMNS,
         SIDEBAR_QUICK_SLOT,
         SIDEBAR_AUTO_CLOSE_MODE,
-        SIDEBAR_ALL_APPS_DARK_SYNC,
     )
 
     /** 需要同步到 Hook 进程、并参与导入导出的业务配置键。 */
@@ -127,7 +119,6 @@ object PrefKeys {
         SIDEBAR_TWO_COLUMNS,
         SIDEBAR_QUICK_SLOT,
         SIDEBAR_AUTO_CLOSE_MODE,
-        SIDEBAR_ALL_APPS_DARK_SYNC,
         ALL_APPS_CUSTOM_ENABLED,
         ALL_APPS_CUSTOM_MODE,
         ALL_APPS_CUSTOM_PACKAGES,

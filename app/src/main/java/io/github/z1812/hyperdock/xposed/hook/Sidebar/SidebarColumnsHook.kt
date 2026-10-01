@@ -15,9 +15,11 @@ import java.lang.reflect.Constructor
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.lang.ref.WeakReference
 import java.util.Collections
 import java.util.WeakHashMap
 import kotlin.math.roundToInt
+import org.luckypray.dexkit.DexKitBridge
 
 /**
  * 侧边栏两列。
@@ -60,12 +62,6 @@ object SidebarColumnsHook : BaseHook() {
     private const val GRID_LAYOUT_MANAGER_CLASS = "androidx.recyclerview.widget.GridLayoutManager"
     private const val LINEAR_LAYOUT_MANAGER_CLASS = "androidx.recyclerview.widget.LinearLayoutManager"
 
-    // TurboLayout 上「box 面板」（视频工具箱 / 游戏工具箱）相关的成员名。
-    // 名字是 R8 产物，找不到就整段降级（只在两列时跳过面板回退），不影响其它功能。
-    private const val BOX_VIEW_FIELD = "Q"
-    private const val BOX_LOAD_METHOD = "j"
-    private const val BOX_ADD_METHOD = "m"
-
     /** 兜底 dp 值：与原生 dock_item_edge / dock_item_padding 一致。 */
     private const val FALLBACK_ITEM_EDGE_DP = 48f
     private const val FALLBACK_ITEM_PADDING_DP = 12f
@@ -86,10 +82,8 @@ object SidebarColumnsHook : BaseHook() {
     @Volatile private var turboWidthField: Field? = null
     @Volatile private var turboWidthFieldSearched = false
 
-    /** 原生单列宽度（px）。首次见到真实布局参数时记录，作为拿不到实例值时的兜底。 */
-    @Volatile private var baseWidthPx = 0
     /**
-     * 每个 dock 实例自己的原生单列宽度。
+     * 每个 dock 实例自己的原生单列宽度；拿不到实例值时等待布局后重试。
      *
      * 只记进程级的一份是不够的：横竖屏切换后宿主重建 dock，原生宽度可能不同，
      * 认旧值会让「旋转后第一次呼出」时算出来的 base 与实际布局对不上，
@@ -113,25 +107,15 @@ object SidebarColumnsHook : BaseHook() {
     /** 全部应用面板是否处于展开态。 */
     @Volatile private var allAppsPanelOpen = false
 
-    /**
-     * 当前挂着「box 面板」（视频工具箱 / 游戏工具箱）的 TurboLayout -> 面板 View，
-     * 以及据此得出的「侧边栏深色态」。
-     *
-     * 记账放在 [SidebarDarkState]（列数回退与全部应用面板深色同步共用）：
-     * 不能用「侧边栏 open 时重置」这种按调用顺序推断的办法，实测 open 会在
-     * `j()` 之后约 50ms 再次被调用，一重置就缩回两列，表现为抖动。
-     * 而宿主又从不 removeView（只做透明度动画，`removeView` 只用于背景 `n`），
-     * 没有「面板关闭」回调。因此只能按实例身份记账：面板还在某个 TurboLayout
-     * 上挂着就算在显示；TurboLayout 被摘出窗口（onDetachedFromWindow）时整条清掉。
-     */
+    /** 仅用于当前 dock 的工具箱避让；弱引用避免面板的 parent 反向保活窗口。 */
+    private val boxPanels = Collections.synchronizedMap(WeakHashMap<View, WeakReference<View>>())
 
     /** 当前是否横屏；横屏横向空间充足，不需要为 box 面板让位。 */
     @Volatile private var landscape = false
 
     /** SpanSizeLookup（`GridLayoutManager$c`）的默认实现，以及它的 `getSpanSize` 钩子状态。 */
     @Volatile private var spanLookupInstalled = false
-    @Volatile private var spanLookupInstance: Any? = null
-    @Volatile private var spanLookupColumns = 1
+    private val spanLookupColumns = Collections.synchronizedMap(WeakHashMap<Any, Int>())
 
     override fun getTag() = TAG
 
@@ -177,8 +161,6 @@ object SidebarColumnsHook : BaseHook() {
             open.isAccessible = true
             runCatching {
             module.hook(open).intercept { chain ->
-                // 这里不要重置 box 面板状态：面板的存亡由 SidebarDarkState 按实例记账，
-                // 按调用顺序推断会抖动（open 比 j() 晚约 50ms）。
                 val result = chain.proceed()
                 runCatching { findDockLayout(chain.args.firstOrNull(), turbo) }
                     .getOrNull()?.let { apply(module, it, converge = true) }
@@ -240,25 +222,26 @@ object SidebarColumnsHook : BaseHook() {
                 // 横竖屏直接决定要不要让位，进决策前必须先刷新（这里是主挂载点，
                 // 旋转后第一次 setLayoutManager 不能拿上一次的旧值）。
                 refreshOrientation(self)
-                val wanted = desiredColumns()
                 val dock = dockOf(self)
+                val wanted = desiredColumns(dock ?: self)
                 // 拿不到 dock、或宽度还落不下去时不能上两列：列表会被塞进
                 // 单列宽的面板里（旋转后第一次呼出最常见的就是这个）。
                 // 这里放原生走完，apply() 的收敛会把宽度落稳后再切两列。
-                val widthReady = dock != null && canWiden(dock)
-                if (wanted > 1 && widthReady) {
+                val widthReady = dock != null && canWiden(dock) && applyPanelSize(module, dock, self, wanted)
+                if (wanted > 1 && widthReady && dock != null) {
                     val grid = buildGrid(self.context, wanted)
                     if (grid != null) {
                         installSpanLookup(module, grid, wanted)
                         val result = runCatching { chain.proceed(arrayOf<Any?>(grid)) }
-                            .getOrElse { chain.proceed() }
+                            .getOrElse {
+                                appliedColumns.remove(self)
+                                val nativeResult = chain.proceed()
+                                apply(module, dock, converge = true)
+                                return@intercept nativeResult
+                            }
                         appliedColumns[self] = wanted
                         appliedDocks.add(dock)
-                        if (!applyPanelSize(module, dock, self, wanted)) {
-                            logWarn(module, "grid applied but panel width not set; converging")
-                        }
-                        // 收敛用完整的 apply：宽度这次没落稳的话，它会在 400ms 后
-                        // 把列数退回单列，不会一直停在「单列宽度 + 两列」上。
+                        // 原生可能延后写回布局参数，再补一次完整 apply 收敛宽度与列数。
                         dock.postDelayed({ apply(module, dock, converge = false) }, CONVERGE_DELAY_MS)
                         log(module, "grid applied columns=$wanted on ${self.javaClass.simpleName}")
                         return@intercept result
@@ -268,6 +251,8 @@ object SidebarColumnsHook : BaseHook() {
                     log(module, "grid deferred columns=$wanted dock=${dock != null}")
                 }
                 val columns = if (wanted > 1) 1 else wanted
+                // 宿主重新装回 LinearLayoutManager 后，旧的「已是两列」记账失效。
+                appliedColumns.remove(self)
                 val result = chain.proceed()
                 if (dock != null) {
                     appliedDocks.add(dock)
@@ -291,21 +276,39 @@ object SidebarColumnsHook : BaseHook() {
      * 让 TurboLayout 回到原生布局。
      *
      * 两个挂载点：
-     * - `j()`：视频工具箱 / 亮度 / 会话面板的加载入口，内部 `getTargetBox()` 后 addView，
-     *   box 实例落在字段 `Q` 上（取不到 box 时 `Q` 为 null，据此区分）；
-     * - `m(View, FrameLayout.LayoutParams)`：游戏工具箱 GridView 的添加入口。
+     * - DexKit 查找调用 `getTargetBox()` 的无参加载入口，通过 `getBoxView()` 取面板；
+     * - 按 `(View, FrameLayout.LayoutParams)` 唯一签名定位游戏工具箱添加入口。
      */
     private fun hookBoxPanel(module: XposedModule, turbo: Class<*>) {
-        val boxViewField = runCatching {
-            turbo.declaredFields.firstOrNull { it.name == BOX_VIEW_FIELD && it.type == View::class.java }
-        }.getOrNull()?.also { it.isAccessible = true }
-        val loadBox = runCatching { turbo.getDeclaredMethod(BOX_LOAD_METHOD) }.getOrNull()
-            ?.takeIf { it.returnType == Void.TYPE && it.parameterCount == 0 }
+        val boxGetter = runCatching { turbo.getMethod("getBoxView") }.getOrNull()
+        val loadBox = runCatching {
+            System.loadLibrary("dexkit")
+            DexKitBridge.create(turbo.classLoader, false).use { bridge ->
+                bridge.getClassData(turbo)?.findMethod {
+                    matcher {
+                        returnType("void")
+                        paramTypes()
+                        invokeMethods {
+                            add {
+                                declaredClass(turbo.name)
+                                name("getTargetBox")
+                                returnType("android.view.View")
+                                paramTypes()
+                            }
+                        }
+                    }
+                }?.mapNotNull { runCatching { it.getMethodInstance(turbo.classLoader) }.getOrNull() }
+                    ?.singleOrNull { !it.isSynthetic }
+            }
+        }.getOrNull()
         val frameParams = runCatching {
             Class.forName("android.widget.FrameLayout\$LayoutParams", false, turbo.classLoader)
         }.getOrNull()
         val addBox = frameParams?.let {
-            runCatching { turbo.getMethod(BOX_ADD_METHOD, View::class.java, it) }.getOrNull()
+            turbo.declaredMethods.singleOrNull { method ->
+                method.returnType == Void.TYPE && !method.isSynthetic &&
+                    method.parameterTypes.contentEquals(arrayOf(View::class.java, it))
+            }
         }
         if (loadBox == null && addBox == null) {
             logWarn(module, "box panel entry points unavailable; toolbox fallback disabled")
@@ -322,9 +325,9 @@ object SidebarColumnsHook : BaseHook() {
                         val box = if (method === addBox) {
                             chain.args.firstOrNull() as? View
                         } else {
-                            boxViewField?.get(self) as? View
+                            boxGetter?.invoke(self) as? View
                         } ?: return@runCatching
-                        val isNew = SidebarDarkState.attachBoxPanel(self, box)
+                        val isNew = boxPanels.put(self, WeakReference(box))?.get() !== box
                         if (isNew) {
                             log(
                                 module,
@@ -332,12 +335,6 @@ object SidebarColumnsHook : BaseHook() {
                                     if (landscape) "none(landscape)" else "single column"
                             )
                         }
-                        // 每次都同步一次（不只在新面板时）：宿主可能只是把上次那个 box
-                        // 面板重新显示出来（不重新走 j() 的构建路径），也可能已经把它
-                        // 用透明度动画藏起来了 —— 深色态都得跟着变。
-                        // syncPanelTheme 幂等，只在真的换了一份面板时才打日志。
-                        runCatching { SidebarDefaultExpandHook.syncPanelTheme(module, self) }
-                            .onFailure { logWarn(module, "panel dark invalidate failed: ${it.message}") }
                         dockLayoutOf(self, turbo)?.let { apply(module, it, converge = true) }
                     }.onFailure { logWarn(module, "box panel apply failed: ${it.message}") }
                     result
@@ -345,31 +342,21 @@ object SidebarColumnsHook : BaseHook() {
             }.onFailure { logWarn(module, "box panel hook failed(${method.name}): ${it.message}") }
         }
         log(module, "box panel hooks installed load=${loadBox != null} add=${addBox != null}")
-
-        // 宿主隐藏 box 面板时不 removeView（只做透明度动画），没有可靠的「关闭」回调，
-        // 因此把 TurboLayout 被摘出窗口当作一次收尾：面板随窗口一起没了，可以恢复两列。
-        // 注意：TurboLayout 未必重写 onDetachedFromWindow —— 拿不到就整条失效，
-        // 必须打日志，否则"深色态永远清不掉"这类问题在日志里无迹可寻。
-        // SidebarDarkState 另外用实例级 OnAttachStateChangeListener 兜底。
-        val detach = runCatching { turbo.getDeclaredMethod("onDetachedFromWindow") }.getOrNull()
-        if (detach == null) {
-            log(module, "TurboLayout has no own onDetachedFromWindow; detach tracked by attach listener")
-        } else {
-            detach.isAccessible = true
-            runCatching {
-                module.hook(detach).intercept { chain ->
-                    val self = chain.thisObject as? View
-                    if (self != null && SidebarDarkState.clearBoxPanel(self)) {
-                        log(module, "box panel cleared on turbo detach")
-                    }
-                    chain.proceed()
-                }
-            }.onFailure { logWarn(module, "turbo detach hook failed: ${it.message}") }
-        }
     }
 
-    /** 是否还有 box 面板挂在某个 TurboLayout 上；清理逻辑见 [SidebarDarkState]。 */
-    private fun hasBoxPanel(): Boolean = SidebarDarkState.hasBoxPanel()
+    private fun hasBoxPanel(dock: View): Boolean {
+        val turbo = turboOf(dock) ?: return false
+        val box = boxPanels[turbo]?.get() ?: return false
+        var current: View? = box
+        while (current != null) {
+            if (!current.isAttachedToWindow || current.visibility != View.VISIBLE ||
+                current.windowVisibility != View.VISIBLE || current.alpha <= 0.01f
+            ) return false
+            if (current === turbo) return box.isShown
+            current = current.parent as? View
+        }
+        return false
+    }
 
     /**
      * 旋转后重新决策列数。
@@ -439,14 +426,6 @@ object SidebarColumnsHook : BaseHook() {
                 val selected = chain.args.firstOrNull() as? Boolean ?: return@intercept chain.proceed()
                 allAppsPanelOpen = selected
                 val self = chain.thisObject as? View
-                // 展开前先对一次配色：这个回调是原生里最早、且一定在面板构建之前
-                // 触发的面板开合信号（日志里 all-apps panel open=true 永远排在
-                // panel ctor 前面）。工具箱在这之前藏起来的话，只有这里能及时
-                // 把缓存的深色面板换回浅色那份。
-                if (selected && self != null) {
-                    runCatching { SidebarDefaultExpandHook.syncPanelTheme(module, turboOf(self)) }
-                        .onFailure { logWarn(module, "panel theme sync failed: ${it.message}") }
-                }
                 val result = chain.proceed()
                 if (self != null) {
                     appliedDocks.add(self)
@@ -504,7 +483,7 @@ object SidebarColumnsHook : BaseHook() {
         // 注意宽度**无条件落一次**，不能只在 wanted > 1 时落：竖屏展开全部应用
         // 面板时 wanted 直接就是 1，只在两列分支落宽度的话 dock 会一直停在
         // 394px，表现为「图标回到单列、面板还是两列那么宽」。
-        val wanted = desiredColumns()
+        val wanted = desiredColumns(view)
         var columns = wanted
         var sizeOk = applyPanelSize(module, view, recycler, columns)
         if (wanted > 1 && !sizeOk) {
@@ -519,8 +498,8 @@ object SidebarColumnsHook : BaseHook() {
         }
     }
 
-    /** 当前应当生效的列数，供分割线宽度等处查询。 */
-    internal fun currentColumns(): Int = desiredColumns()
+    /** 列表实际已应用的列数，宽度尚未就绪时不能把目标两列当作已生效。 */
+    internal fun currentColumns(recycler: View): Int = appliedColumns[recycler] ?: 1
 
     /**
      * 目标列数。两个开关在设置页互斥，但导入备份配置可能绕过 UI，
@@ -531,9 +510,9 @@ object SidebarColumnsHook : BaseHook() {
      *   横屏横向空间充足，保持两列（用户明确要求）；
      * - box 面板（游戏/视频工具箱）：自身宽度写死，横屏同样放得下。
      */
-    private fun desiredColumns(): Int {
+    private fun desiredColumns(dock: View): Int {
         if (!landscape && allAppsPanelOpen) return 1
-        if (!landscape && hasBoxPanel()) return 1
+        if (!landscape && hasBoxPanel(dock)) return 1
         if (!ConfigManager.getBoolean(PREF_ENABLED, false)) return 1
         if (ConfigManager.getBoolean(PrefKeys.SIDEBAR_EXPAND_ALL_APPS, false)) return 1
         return COLUMN_COUNT
@@ -564,8 +543,8 @@ object SidebarColumnsHook : BaseHook() {
             logWarn(module, "span lookup classes unavailable; divider stays in one cell")
             return
         }
-        val getSpanSize = runCatching { defaultType.getMethod("f", Int::class.javaPrimitiveType) }.getOrNull()
-            ?: defaultType.methods.firstOrNull { method ->
+        val getSpanSize = defaultType.declaredMethods.singleOrNull { method ->
+                !Modifier.isStatic(method.modifiers) &&
                 method.returnType == Int::class.javaPrimitiveType && method.parameterCount == 1 &&
                     method.parameterTypes[0] == Int::class.javaPrimitiveType
             }
@@ -581,8 +560,8 @@ object SidebarColumnsHook : BaseHook() {
             getSpanSize.isAccessible = true
             runCatching {
                 module.hook(getSpanSize).intercept { chain ->
-                    val columnsNow = spanLookupColumns
-                    if (columnsNow <= 1 || chain.thisObject !== spanLookupInstance) {
+                    val columnsNow = spanLookupColumns[chain.thisObject] ?: 1
+                    if (columnsNow <= 1) {
                         return@intercept chain.proceed()
                     }
                     val position = chain.args.firstOrNull() as? Int ?: return@intercept chain.proceed()
@@ -592,8 +571,7 @@ object SidebarColumnsHook : BaseHook() {
             spanLookupInstalled = true
             log(module, "span lookup hooked ${defaultType.name}.${getSpanSize.name}")
         }
-        spanLookupInstance = instance
-        spanLookupColumns = columns
+        spanLookupColumns[instance] = columns
         runCatching {
             setter.isAccessible = true
             setter.invoke(grid, instance)
@@ -892,10 +870,10 @@ object SidebarColumnsHook : BaseHook() {
         // 我们自己写进去的宽度（以及两列的目标宽度）都不是原生值，不能记。
         if (width > 0 && width != wide && width != appliedWidths[dock]) {
             nativeDockWidths[dock] = width
-            baseWidthPx = width
             return width
         }
-        return baseWidthPx.takeIf { it > 0 } ?: 0
+        // 实例尚未提供原生宽度时等待下一次布局，不能借用旋转前其它 dock 的值。
+        return 0
     }
 
     /**

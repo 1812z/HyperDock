@@ -1,12 +1,10 @@
 package io.github.z1812.hyperdock.xposed
 
-import io.github.z1812.hyperdock.xposed.hook.Sidebar.SidebarAllAppsDarkHook
 import io.github.z1812.hyperdock.xposed.hook.Sidebar.SidebarCloseHook
 import io.github.z1812.hyperdock.xposed.hook.Sidebar.SidebarColumnsHook
 import io.github.z1812.hyperdock.xposed.hook.Sidebar.SidebarDockSlotHook
 import io.github.z1812.hyperdock.xposed.hook.Sidebar.SidebarDefaultExpandHook
 import io.github.z1812.hyperdock.xposed.hook.Sidebar.SidebarShortcutHook
-import io.github.z1812.hyperdock.xposed.hook.Sidebar.SidebarShorthandHook
 import io.github.z1812.hyperdock.xposed.hook.Sidebar.SidebarQsBridgeHook
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
@@ -38,8 +36,6 @@ class HyperDockModule : XposedModule() {
                 SidebarCloseHook.init(this, param)
                 SidebarColumnsHook.init(this, param)
                 SidebarDockSlotHook.init(this, param)
-                SidebarShorthandHook.init(this, param)
-                SidebarAllAppsDarkHook.init(this, param)
             }
             "com.android.systemui" -> {
                 SidebarQsBridgeHook.init(this, param)

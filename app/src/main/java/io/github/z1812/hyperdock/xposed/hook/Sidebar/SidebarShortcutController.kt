@@ -111,17 +111,6 @@ internal object SidebarShortcutController {
     /** URL 快速启动条目的兜底图标。 */
     private const val URL_ICON_RES = "ic_quick_launch_url"
 
-    private const val RECYCLER_VIEW_CLASS = "androidx.recyclerview.widget.RecyclerView"
-
-    /** 列表提交后延迟多久补绑图标（去抖窗口，覆盖宿主的分批提交）。 */
-    private const val REBIND_DEBOUNCE_MS = 350L
-
-    /** 遍历面板子树找列表容器时的节点上限，防止异常层级下卡住主线程。 */
-    private const val MAX_TREE_WALK = 400
-
-    /** 判定「是不是 RecyclerView 子类」时向上最多走几层。 */
-    private const val MAX_SUPER_DEPTH = 8
-
     /** 系统磁贴 drawable 的查找顺序：先 SystemUI 自带磁贴图标，再框架通用图标。 */
     private val DRAWABLE_PACKAGES = arrayOf("com.android.systemui", "android")
 
@@ -167,19 +156,7 @@ internal object SidebarShortcutController {
     private var stateFlowSetMethods: List<Method> = emptyList()
     @Volatile private var stateFlowMethod: Method? = null
     @Volatile private var stateFlowInstance: Any? = null
-    /**
-     * 每个 StateFlow 实例 -> 它的 setter。
-     *
-     * 全部应用面板现在会被缓存复用（浅色/深色各一份），两份面板各有自己的
-     * StateFlow；只记最后一个实例的话，刷新会打在不显示的那一块面板上，
-     * 表现为"浅色面板的图标永远不更新"。这里按实例分别记账。
-     */
-    private val stateFlowTargets = Collections.synchronizedMap(WeakHashMap<Any, Method>())
     @Volatile private var adapterInstance: Any? = null
-    /** 最近一次被换上屏的面板（弱引用），图标补绑要用。 */
-    @Volatile private var activePanelRef: java.lang.ref.WeakReference<View>? = null
-    private val rebindHandler = Handler(Looper.getMainLooper())
-    private var pendingRebind: Runnable? = null
     @Volatile private var configListenerRegistered = false
     private var titleBindMethod: Method? = null
     private var shortcutBindMethod: Method? = null
@@ -218,7 +195,6 @@ internal object SidebarShortcutController {
     private var lastPrepareFailure: String? = null
     private var preparePermanentlyFailed = false
     private var injectionLogged = false
-    private var injectionCount = 0
     @Volatile private var cachedNativeModels: List<Any>? = null
 
     private fun log(module: XposedModule, message: String) {
@@ -258,7 +234,6 @@ internal object SidebarShortcutController {
                     module.hook(m).intercept { chain ->
                         if (stateFlowInstance !== chain.thisObject) stateFlowInstance = chain.thisObject
                         if (stateFlowMethod !== m) stateFlowMethod = m
-                        stateFlowTargets[chain.thisObject] = m
                         val value = chain.args.getOrNull(0)
                         if (value is List<*>) {
                             @Suppress("UNCHECKED_CAST")
@@ -269,17 +244,13 @@ internal object SidebarShortcutController {
                             // unrelated list makes native titles get sorted as tiles.
                             if (list.isEmpty() && ConfigManager.getBoolean(PrefKeys.SIDEBAR_PANEL_CACHE, false)) {
                                 cachedNativeModels?.let { cached ->
-                                    val result = chain.proceed(arrayOf<Any?>(inject(module, cached)))
-                                    scheduleIconRebind()
-                                    return@intercept result
+                                    return@intercept chain.proceed(arrayOf<Any?>(inject(module, cached)))
                                 }
                             }
                             if (isLikelyAllAppsList(list)) {
                                 val injected = inject(module, list)
                                 if (injected !== list) stateFlowSynchronized = true
-                                val result = chain.proceed(arrayOf<Any?>(injected))
-                                scheduleIconRebind()
-                                return@intercept result
+                                return@intercept chain.proceed(arrayOf<Any?>(injected))
                             }
                         } else {
                             // The main content flow emits C5724g0.c.b, not a raw
@@ -309,9 +280,7 @@ internal object SidebarShortcutController {
                     if (isLikelyAllAppsList(original)) {
                         val injected = inject(module, original)
                         activeAdapterModels = injected
-                        val result = chain.proceed(arrayOf<Any?>(injected))
-                        scheduleIconRebind()
-                        return@intercept result
+                        chain.proceed(arrayOf<Any?>(injected))
                     } else {
                         chain.proceed()
                     }
@@ -863,14 +832,11 @@ internal object SidebarShortcutController {
     // ── 注入 ──────────────────────────────────────────────────────────────────
 
     private fun inject(module: XposedModule, original: List<Any>): List<Any> {
-        // 不再只打一次：面板被缓存复用后，宿主是否还会重新提交列表、提交几次，
-        // 是判断"图标为什么只绑了一次"的关键证据。
-        injectionCount++
-        log(
-            module,
-            "all-apps list accepted #$injectionCount size=${original.size} " +
-                "nativeTitles=${original.count { titleModelType?.let { type -> it.javaClass == type } == true }}"
-        )
+        if (!injectionLogged) {
+            log(module, "all-apps list accepted size=${original.size} nativeTitles=" +
+                original.count { titleModelType?.let { type -> it.javaClass == type } == true })
+            injectionLogged = true
+        }
         // The adapter emits an empty initial snapshot before All Apps data is
         // loaded. Do not create a transient shortcut section from that snapshot;
         // the next non-empty emission will be processed normally.
@@ -1667,14 +1633,6 @@ internal object SidebarShortcutController {
         val native = cachedNativeModels
         if (native == null || native.isEmpty()) return
         if (!isLikelyAllAppsList(native)) return
-        // 面板会被缓存复用（浅色/深色各一份），每一份的 StateFlow 都要刷到，
-        // 否则"刷新打在没显示的那块面板上"，当前面板的图标永远不更新。
-        val targets = synchronized(stateFlowTargets) { stateFlowTargets.entries.toList() }
-        var done = false
-        targets.forEach { (instance, method) ->
-            if (runCatching { method.invoke(instance, native) }.isSuccess) done = true
-        }
-        if (done) return
         val method = stateFlowMethod
         val instance = stateFlowInstance
         if (method != null && instance != null) {
@@ -1685,119 +1643,6 @@ internal object SidebarShortcutController {
         if (adapter != null && adapterTarget != null) {
             runCatching { adapter.invoke(adapterTarget, native) }
         }
-    }
-
-    /**
-     * 缓存面板重新上屏后补一次图标绑定。
-     *
-     * 注入条目的图标是同步解码的，但首次绑定可能早于图标资源就绪（跨包取图标、
-     * 系统磁贴目录异步到达），那一轮绑定只留下占位图；之后再没有第二次绑定机会
-     * （面板复用时宿主不会重新提交列表），于是表现为"图标不加载，必须点一下
-     * （或再开一次面板）才出来"。这里直接强制重绑可见行补上。
-     */
-    /**
-     * 缓存面板重新上屏后补一次图标绑定。
-     *
-     * 实测：面板复用时宿主确实会重新提交列表，但提交的是**与上一轮等价**的模型，
-     * DiffUtil 判定无变化 → 行不重绑 → `icon bound` 一次都不触发（日志里
-     * `all-apps list accepted #8/#9/#10` 后面一条 icon bound 都没有）。
-     * 而上一轮绑上的图标已经被清掉了，于是表现为"回到桌面后图标消失"。
-     * 这里直接强制重绑可见行补上。
-     */
-    fun refreshPanelIcons(panel: View) {
-        val recycler = findListContainer(panel)
-        if (recycler == null) {
-            logNow("panel icon refresh: no list container; children=${childClassNames(panel)}")
-            return
-        }
-        val adapter = runCatching {
-            recycler.javaClass.getMethod("getAdapter").invoke(recycler)
-        }.getOrNull()
-        if (adapter == null) {
-            logNow("panel icon refresh: no adapter on ${recycler.javaClass.name}")
-            return
-        }
-        val ok = runCatching { adapter.javaClass.getMethod("notifyDataSetChanged").invoke(adapter) }.isSuccess
-        logNow("panel icon refresh: rebind=$ok list=${recycler.javaClass.name}")
-    }
-
-    /**
-     * 在 [root] 的子树里找列表容器。
-     *
-     * 不能用 `javaClass.name == "androidx...RecyclerView"` 精确匹配：宿主用的是
-     * 自己的子类（日志里 `no recycler under com.miui.dock.allapps.w` 就是这么来的）。
-     * 沿父类链找名字；再兜一层"有 getAdapter()"的语义判定。
-     */
-    private fun findListContainer(root: View): View? {
-        if (isRecyclerView(root)) return root
-        if (root !is ViewGroup) return null
-        val queue = java.util.ArrayDeque<View>()
-        queue.add(root)
-        var visited = 0
-        var adapterFallback: View? = null
-        while (queue.isNotEmpty() && visited++ < MAX_TREE_WALK) {
-            val node = queue.removeFirst()
-            if (isRecyclerView(node)) return node
-            if (adapterFallback == null && runCatching { node.javaClass.getMethod("getAdapter") }.isSuccess) {
-                adapterFallback = node
-            }
-            if (node !is ViewGroup) continue
-            for (index in 0 until node.childCount) node.getChildAt(index)?.let(queue::addLast)
-        }
-        return adapterFallback
-    }
-
-    private fun isRecyclerView(view: View): Boolean {
-        var type: Class<*>? = view.javaClass
-        var depth = 0
-        while (type != null && depth++ < MAX_SUPER_DEPTH) {
-            if (type.name == RECYCLER_VIEW_CLASS) return true
-            type = type.superclass
-        }
-        return false
-    }
-
-    /** 找不到列表容器时把子树前两层类名打出来，便于下一轮修正判定。 */
-    private fun childClassNames(root: View): String {
-        val out = StringBuilder()
-        fun walk(node: View, depth: Int) {
-            if (depth > 2 || out.length > 300) return
-            if (out.isNotEmpty()) out.append(',')
-            out.append("  ".repeat(depth)).append(node.javaClass.simpleName)
-            if (node !is ViewGroup) return
-            for (index in 0 until node.childCount.coerceAtMost(8)) {
-                node.getChildAt(index)?.let { walk(it, depth + 1) }
-            }
-        }
-        walk(root, 0)
-        return out.toString()
-    }
-
-    /** 面板换上屏后请求一次图标补绑（换面板与列表提交都会走到这里，内部去抖）。 */
-    fun requestIconRebind(panel: View) {
-        setActivePanel(panel)
-        scheduleIconRebind()
-    }
-
-    /** 面板被换上屏时调用（来自 SidebarDefaultExpandHook）。 */
-    fun setActivePanel(panel: View) {
-        activePanelRef = java.lang.ref.WeakReference(panel)
-    }
-
-    /**
-     * 队列里"列表刚提交完"之后的图标补绑。
-     *
-     * 必须在提交**之后**做：换面板（21:34:24.8）比列表重新提交（25.3/30.3/36.3）
-     * 早约半秒，换完立刻重绑等于白绑。这里用去抖：每次提交都把上一次的推迟掉，
-     * 只在最后一次提交后跑一次。
-     */
-    private fun scheduleIconRebind() {
-        pendingRebind?.let(rebindHandler::removeCallbacks)
-        val task = Runnable {
-            activePanelRef?.get()?.let { refreshPanelIcons(it) }
-        }
-        pendingRebind = task
-        rebindHandler.postDelayed(task, REBIND_DEBOUNCE_MS)
     }
 
     private fun logNow(message: String) {
