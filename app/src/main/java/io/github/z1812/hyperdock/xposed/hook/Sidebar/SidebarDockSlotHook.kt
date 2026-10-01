@@ -2,6 +2,7 @@ package io.github.z1812.hyperdock.xposed.hook.Sidebar
 
 import android.app.Application
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.drawable.Drawable
 import android.view.View
 import android.view.ViewGroup
@@ -15,8 +16,11 @@ import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
+import java.lang.ref.WeakReference
 import java.util.Collections
 import java.util.WeakHashMap
+import java.util.concurrent.Executors
+import org.luckypray.dexkit.DexKitBridge
 
 /**
  * 两列模式下「速记」旁边的那一格，以及分割线的加长。
@@ -40,13 +44,14 @@ object SidebarDockSlotHook : BaseHook() {
 
     private const val TURBO_LAYOUT_CLASS = "com.miui.gamebooster.windowmanager.newbox.TurboLayout"
     private const val RECYCLER_VIEW_CLASS = "androidx.recyclerview.widget.RecyclerView"
-    private const val VIEW_HOLDER_CLASS = "androidx.recyclerview.widget.RecyclerView\$c0"
-    private const val ADAPTER_CLASS = "androidx.recyclerview.widget.RecyclerView\$h"
     private const val LINEAR_LAYOUT_MANAGER_CLASS = "androidx.recyclerview.widget.LinearLayoutManager"
 
     private const val ID_DIVIDER = "divider"
     private const val ID_ICON = "iv_icon"
     private const val ID_PLACEHOLDER = "iv_placeholder"
+
+    /** DefaultItemAnimator 上要归零的三个时长。宿主 R8 可能改名，取不到就走兜底。 */
+    private val DURATION_SETTERS = listOf("setChangeDuration", "setAddDuration", "setRemoveDuration")
     private const val DIMEN_DIVIDER_WIDTH = "dock_divider_width"
     private const val DIMEN_ITEM_PADDING = "dock_item_padding"
 
@@ -57,11 +62,13 @@ object SidebarDockSlotHook : BaseHook() {
     /** RecyclerView → 它的 adapter。setAdapter 时先记下，等确认是侧边栏再接管。 */
     private val adapterByView = Collections.synchronizedMap(WeakHashMap<View, Any>())
     @Volatile private var adapterInstance: Any? = null
+    @Volatile private var dockRecyclerRef: WeakReference<View>? = null
     @Volatile private var preparedAdapterClass: Class<*>? = null
     @Volatile private var submitMethod: Method? = null
-    @Volatile private var bindMethod: Method? = null
     @Volatile private var clickMethod: Method? = null
     @Volatile private var itemInterface: Class<*>? = null
+    @Volatile private var itemBindMethod: Method? = null
+    @Volatile private var itemClickMethod: Method? = null
     @Volatile private var slotItem: Any? = null
     @Volatile private var nativeList: List<Any> = emptyList()
 
@@ -78,8 +85,37 @@ object SidebarDockSlotHook : BaseHook() {
     @Volatile private var cachedIconId: String? = null
     @Volatile private var cachedIcon: Drawable? = null
 
-    /** change 动画是否已经关掉（每个列表只需要一次）。 */
-    @Volatile private var changeAnimationMuted = false
+    /**
+     * 预热请求的序号。
+     *
+     * 取图标要走跨进程调用（createPackageContext / RemotePreferences），后台线程拿到
+     * 结果时配置可能已经变了。旧实现里"谁先回来谁写缓存"，于是旧 id 的图标会把新 id
+     * 的缓存顶掉 —— 表现就是缓存像没生效一样，每次打开侧边栏图标都慢一拍。
+     * 用序号保证只有**最后一次**预热请求能落地。
+     */
+    @Volatile private var iconRequestSeq = 0L
+    private val iconLock = Any()
+    private val iconExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "hyperdock-slot-icon").apply { isDaemon = true }
+    }
+
+    /** 最近一次绑定槽位的 id 与图标 View（弱引用）。异步预热完成时直接回填到这里，
+     *  不必等下一次 DiffUtil 重绑 —— 那一帧缓存还是空的就是"图标晚一点才冒出来"。 */
+    @Volatile private var boundIconId: String? = null
+    @Volatile private var boundIconView: WeakReference<ImageView>? = null
+
+    /** 接管过的列表的 applicationContext，供配置变化时重新预热图标用。 */
+    @Volatile private var appContext: Context? = null
+
+    /**
+     * 已经关掉 change 动画的列表。
+     *
+     * 侧边栏每次打开都是**一个新的 RecyclerView**（窗口销毁后重建），必须按实例记账。
+     * 之前用进程级布尔量，结果只有第一个列表被关掉，之后每次打开侧边栏
+     * DefaultItemAnimator 都在跑：宿主 DiffUtil 永远把自造条目判成"不相同"，
+     * 于是槽位反复 remove/insert + 淡入淡出，视觉上就是图标"从无到突然出现"。
+     */
+    private val mutedLists = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
 
     /** 判定过"不是侧边栏列表"的 adapter 类，避免每次都打一条 warn。 */
     private val rejectedClasses = Collections.newSetFromMap(WeakHashMap<String, Boolean>())
@@ -100,8 +136,14 @@ object SidebarDockSlotHook : BaseHook() {
             return
         }
         val rvClass = runCatching { Class.forName(RECYCLER_VIEW_CLASS, false, loader) }.getOrNull()
-        val adapterClass = runCatching { Class.forName(ADAPTER_CLASS, false, loader) }.getOrNull()
-        holderClass = runCatching { Class.forName(VIEW_HOLDER_CLASS, false, loader) }.getOrNull()
+        val adapterClass = rvClass?.methods?.singleOrNull {
+            it.name == "setAdapter" && it.parameterCount == 1
+        }?.parameterTypes?.singleOrNull()
+        holderClass = rvClass?.declaredClasses?.singleOrNull { type ->
+            type.declaredFields.any { field ->
+                field.name == "itemView" && field.type == View::class.java
+            }
+        }
         if (rvClass == null || adapterClass == null) {
             logWarn(module, "RecyclerView unavailable; dock slot disabled")
             return
@@ -177,36 +219,38 @@ object SidebarDockSlotHook : BaseHook() {
     }
 
     /**
-     * 关掉列表的"内容变化"交叉淡入动画。
+     * 关掉列表里会让槽位图标"淡入"的那些动画。
      *
-     * 自造条目在宿主的 DiffUtil 里通常被判为"内容有变化"（它对未知查询一律返回默认值），
-     * 于是每次提交都会派发 change 事件，DefaultItemAnimator 拿旧 holder 和新 holder
-     * 交叉淡入淡出 —— 视觉上就是图标"从无到突然冒出来"。把 changeDuration 置 0 关掉它，
-     * 移动 / 新增 / 移除动画保留，不影响原生那些动效。
+     * 宿主 DiffUtil 对自造条目的判定不稳定：有时判成"内容有变化"（走 change 动画，
+     * 旧/新 holder 交叉淡入淡出），有时判成"不是同一条"（走 remove + insert，
+     * 图标先淡出再淡入）—— 两种都是"图标从无到突然冒出来"。所以 change /
+     * add / remove 三个时长都要置 0，只关一个会留下另一条淡入路径。
+     * 移动动画保留，原生条目换位时的动效不受影响。
+     *
+     * 必须**按列表实例**记账：侧边栏窗口每次打开都会重建 RecyclerView，
+     * 用进程级布尔量只会关掉第一个列表，后面每次打开都在跑这些动画。
      */
     private fun muteChangeAnimation(module: XposedModule, view: View) {
-        if (changeAnimationMuted) return
+        synchronized(mutedLists) { if (mutedLists.contains(view)) return }
         val animator = runCatching {
             val getter = view.javaClass.getMethod("getItemAnimator")
             getter.isAccessible = true
             getter.invoke(view)
         }.getOrNull()
         if (animator == null) return
-        val setter = runCatching {
-            animator.javaClass.getMethod("setChangeDuration", Long::class.javaPrimitiveType)
-        }.getOrNull()
-        if (setter != null) {
-            val ok = runCatching {
+        val zeroed = DURATION_SETTERS.count { name ->
+            runCatching {
+                val setter = animator.javaClass.getMethod(name, Long::class.javaPrimitiveType)
                 setter.isAccessible = true
                 setter.invoke(animator, 0L)
             }.isSuccess
-            if (ok) {
-                changeAnimationMuted = true
-                log(module, "item change animation muted on dock list")
-                return
-            }
         }
-        // 兜底：直接把动画器摘掉。宿主 R8 可能把 setChangeDuration 改名了。
+        if (zeroed == DURATION_SETTERS.size) {
+            synchronized(mutedLists) { mutedLists.add(view) }
+            log(module, "item change/add/remove animation muted on dock list")
+            return
+        }
+        // 兜底：直接把动画器摘掉。宿主 R8 可能把上面几个 setter 改名了。
         val animatorSetter = view.javaClass.methods.firstOrNull {
             it.name == "setItemAnimator" && it.parameterCount == 1
         }
@@ -217,9 +261,10 @@ object SidebarDockSlotHook : BaseHook() {
             }.isSuccess
         } == true
         if (removed) {
-            changeAnimationMuted = true
-            log(module, "item animator removed on dock list")
+            synchronized(mutedLists) { mutedLists.add(view) }
+            log(module, "item animator removed on dock list (durations unavailable: $zeroed/${DURATION_SETTERS.size})")
         } else {
+            // 失败时**不**记账，claim 里 post 的那次重试还有机会再来一遍。
             logWarn(module, "cannot mute item animation on dock list")
         }
     }
@@ -234,14 +279,21 @@ object SidebarDockSlotHook : BaseHook() {
      * 表现为槽位图标时有时无、而且 `displayList` 不再更新导致分割线下方的应用错位。
      */
     private fun claim(module: XposedModule, view: View, adapter: Any) {
-        if (adapterInstance === adapter) return
         if (!isDockRecycler(view)) return
         if (!prepareAdapter(module, adapter)) return
-        adapterInstance = adapter
-        adapterByView[view] = adapter
-        // 提前把图标读出来 warm 住，避免第一次绑定时 PackageManager 取图造成延迟。
-        preloadIcon(view.context)
+        dockRecyclerRef = WeakReference(view)
         muteChangeAnimation(module, view)
+        if (adapterInstance === adapter) return
+        adapterInstance = adapter
+        lastStripped = emptyList()
+        lastInjected = emptyList()
+        nativeList = emptyList()
+        SidebarDockState.displayList = emptyList()
+        SidebarDockState.slotItem = null
+        adapterByView[view] = adapter
+        appContext = view.context?.applicationContext
+        // 提前把图标取回来 warm 住，避免第一次绑定时现取（跨进程，几十毫秒）。
+        warmIcon(view.context)
         view.post { muteChangeAnimation(module, view) }
         log(module, "dock list claimed: ${adapter.javaClass.name}")
     }
@@ -257,6 +309,17 @@ object SidebarDockSlotHook : BaseHook() {
     }
 
     override fun onConfigChanged() {
+        // 图标来源（选中的条目、自定义图标 URI、彩色图标开关……）任何一项变了，
+        // 缓存都得整体作废：缓存键只有条目 id，同一个 id 换图标时不会失效，
+        // 结果就是"改了图标却一直显示旧的那张"。
+        synchronized(iconLock) {
+            cachedIcon = null
+            cachedIconId = null
+            iconRequestSeq++
+        }
+        warmIcon(appContext)
+        // 同一个 id 更换图标时也必须重新绑定，不能命中「列表未变」短路。
+        lastInjected = emptyList()
         // 开关/选中的图标变了：用最近一次原生列表重新提交一次，
         // 触发 DiffUtil 重算（自造条目永远"不相同"，必然重新绑定）。
         val adapter = adapterInstance ?: return
@@ -288,7 +351,7 @@ object SidebarDockSlotHook : BaseHook() {
         }
         val holderType = holderClass
         if (holderType == null) {
-            logWarn(module, "RecyclerView\$c0 unavailable; bind hook disabled")
+            logWarn(module, "RecyclerView holder contract unavailable; bind hook disabled")
         }
         // onBindViewHolder 可能声明在父类（ListAdapter 之类），要沿继承链找。
         val bind = holderType?.let { holder ->
@@ -300,7 +363,6 @@ object SidebarDockSlotHook : BaseHook() {
             }
         }
         submitMethod = submit
-        bindMethod = bind
         preparedAdapterClass = type
         log(module, "dock adapter=${type.name} submit=${submit.name} bind=${bind?.name}")
 
@@ -312,6 +374,18 @@ object SidebarDockSlotHook : BaseHook() {
                 val raw = chain.args.getOrNull(0) as? List<Any>
                     ?: return@intercept chain.proceed()
                 val flag = chain.args.getOrNull(1) ?: false
+                val id = SidebarQuickSlotConfig.current()
+                // 宿主把它上次拿到的列表（就是我们注入过的那份）**原样**传回来了。
+                // 这时必须直接放行：再走一遍 strip→inject 就会造出一个内容相同、
+                // 实例不同的新列表，宿主拿回去又会再传一次 —— 形成每秒一次的往复，
+                // 槽位被反复 remove/insert，图标就跟着一闪一闪。
+                if (raw === lastInjected && lastInjected.isNotEmpty() &&
+                    id == lastSlotId && lastTwoColumns == twoColumnsEnabled()
+                ) {
+                    SidebarDockState.displayList = lastInjected
+                    log(module, "submit echo (raw=${raw.size}); pass through")
+                    return@intercept chain.proceed(arrayOf<Any?>(raw, flag))
+                }
                 // 宿主有可能把它上次拿到的列表再传回来（里面带着我们注入过的条目），
                 // 不先剔除就会一次比一次多，表现为「分割线上方出现两个设定图标」。
                 val list = strip(raw)
@@ -321,7 +395,6 @@ object SidebarDockSlotHook : BaseHook() {
                 // 内容其实一模一样。若每次都 new 一个 ArrayList，实例不同，
                 // ListAdapter 的"同一实例直接返回"短路就失效，于是每秒都要跑一遍
                 // DiffUtil 并重绑槽位（表现为图标忽有忽无）。内容相同就复用旧实例。
-                val id = SidebarQuickSlotConfig.current()
                 if (sameList(lastStripped, list) && lastSlotId == id &&
                     lastTwoColumns == twoColumnsEnabled() && lastInjected.isNotEmpty()
                 ) {
@@ -353,6 +426,7 @@ object SidebarDockSlotHook : BaseHook() {
                     if (chain.thisObject !== adapterInstance) return@intercept result
                     val holder = chain.args.getOrNull(0) ?: return@intercept result
                     val position = chain.args.getOrNull(1) as? Int ?: return@intercept result
+                    if (SidebarDockState.displayList.getOrNull(position) !== slotItem) unbindSlot(holder)
                     afterBind(module, holder, position)
                     result
                 }
@@ -439,18 +513,26 @@ object SidebarDockSlotHook : BaseHook() {
                 adapterInstance?.let { installClickHook(module, it.javaClass, iface) }
             } ?: logWarn(module, "item interface not found; slot click may not dispatch")
         }
-        // 原生顺序 [速记][分割线][应用…]：三个类互不相同即可确认。
+        // 只在竖屏识别 [速记][分割线][应用…]，前两项是同基类的无参模型。
         val slotType = slotItem?.javaClass
-        if (SidebarDockState.dividerClass == null && list.size >= 3) {
+        if (!isLandscape() && SidebarDockState.dividerClass == null && list.size >= 3) {
             val a = list[0].javaClass
             val b = list[1].javaClass
             val c = list[2].javaClass
             // 自造条目不能被认成速记/分割线，否则 SpanSizeLookup 会算错占格。
-            if (a != b && b != c && a != slotType && b != slotType && c != slotType) {
+            if (a != b && a != c && b != c && a != slotType && b != slotType && c != slotType &&
+                a.superclass == b.superclass &&
+                a.declaredConstructors.any { it.parameterCount == 0 } &&
+                b.declaredConstructors.any { it.parameterCount == 0 }
+            ) {
                 SidebarDockState.shorthandClass = a
                 SidebarDockState.dividerClass = b
+                resolveItemMethods(a, module)
                 log(module, "shorthand=${a.name} divider=${b.name}")
             }
+        }
+        if (itemBindMethod == null) {
+            SidebarDockState.shorthandClass?.let { resolveItemMethods(it, module) }
         }
     }
 
@@ -461,11 +543,21 @@ object SidebarDockSlotHook : BaseHook() {
         return ArrayList<Any>(list.filter { it !== existing })
     }
 
-    /** 逐位比较引用：内容一致说明这次提交不会改变行结构，可以复用上次的列表实例。 */
+    /**
+     * 逐位比较，判断这次提交改没改行结构。
+     *
+     * 只比引用是不够的：宿主每次重建条目实例（同一批应用、内容一模一样），
+     * 引用比较恒为 false，于是每次都重新注入 → DiffUtil → 重绑槽位。
+     * 因此引用不等时再退一步比 `equals`（宿主条目若是 data class 就是内容比较）。
+     * 自造条目的 equals 走的是身份比较（见 createSlotItem），不受影响。
+     */
     private fun sameList(a: List<Any>, b: List<Any>): Boolean {
+        if (a === b) return true
         if (a.size != b.size) return false
         for (index in a.indices) {
-            if (a[index] !== b[index]) return false
+            val left = a[index]
+            val right = b[index]
+            if (left !== right && left != right) return false
         }
         return true
     }
@@ -477,19 +569,16 @@ object SidebarDockSlotHook : BaseHook() {
     @Volatile private var lastTwoColumns = false
 
     private fun inject(module: XposedModule, list: List<Any>): List<Any> {
+        SidebarDockState.slotItem = null
         val id = SidebarQuickSlotConfig.current()
-        if (id.isBlank() || !twoColumnsEnabled()) {
-            SidebarDockState.slotItem = null
-            return list
-        }
+        if (id.isBlank() || !twoColumnsEnabled()) return list
+        val shorthand = SidebarDockState.shorthandClass ?: return list
+        val shorthandIndex = list.indexOfFirst { it.javaClass == shorthand }
+        // 没有速记就没有「速记旁」的槽位，不能默认插到第一格。
+        if (shorthandIndex < 0) return list
         val item = slotItem ?: createSlotItem(module) ?: return list
         SidebarDockState.slotItem = item
-        val shorthand = SidebarDockState.shorthandClass
-        val index = if (shorthand != null) {
-            (list.indexOfFirst { it.javaClass == shorthand } + 1).takeIf { it > 0 } ?: 0
-        } else {
-            0
-        }
+        val index = shorthandIndex + 1
         val out = ArrayList<Any>(list.size + 1)
         out.addAll(list)
         out.add(index.coerceIn(0, out.size), item)
@@ -498,10 +587,45 @@ object SidebarDockSlotHook : BaseHook() {
     }
 
     private fun twoColumnsEnabled(): Boolean {
+        if (isLandscape()) return false
         if (!ConfigManager.getBoolean(PrefKeys.SIDEBAR_TWO_COLUMNS, false)) return false
         if (ConfigManager.getBoolean(PrefKeys.SIDEBAR_EXPAND_ALL_APPS, false)) return false
         return true
     }
+
+    private fun resolveItemMethods(shorthand: Class<*>, module: XposedModule) {
+        val iface = itemInterface ?: return
+        val holder = holderClass ?: return
+        runCatching {
+            System.loadLibrary("dexkit")
+            val bind = DexKitBridge.create(shorthand.classLoader, false).use { bridge ->
+                bridge.getClassData(shorthand)?.findMethod {
+                    matcher {
+                        returnType("void")
+                        paramTypes(holder.name)
+                        invokeMethods {
+                            add {
+                                declaredClass("android.widget.ImageView")
+                                name("setImageResource")
+                                paramTypes("int")
+                            }
+                        }
+                    }
+                }?.mapNotNull { runCatching { it.getMethodInstance(shorthand.classLoader) }.getOrNull() }
+                    ?.singleOrNull()
+            } ?: return@runCatching
+            itemBindMethod = iface.methods.singleOrNull {
+                it.name == bind.name && it.parameterTypes.contentEquals(bind.parameterTypes)
+            }
+            itemClickMethod = iface.methods.singleOrNull {
+                it.returnType == Void.TYPE && it.parameterTypes.contentEquals(arrayOf(holder)) &&
+                    it != itemBindMethod
+            }
+        }.onFailure { logWarn(module, "dock item bind discovery failed: ${it.message}") }
+    }
+
+    private fun isLandscape(): Boolean = dockRecyclerRef?.get()?.resources?.configuration?.orientation ==
+        Configuration.ORIENTATION_LANDSCAPE
 
     // ── 自造条目 ───────────────────────────────────────────────────────────────
 
@@ -512,15 +636,21 @@ object SidebarDockSlotHook : BaseHook() {
      */
     private fun createSlotItem(module: XposedModule): Any? {
         val iface = itemInterface ?: return null
+        val bind = itemBindMethod ?: return null
+        val click = itemClickMethod ?: return null
         val loader = iface.classLoader ?: return null
         val ref = arrayOfNulls<Any>(1)
         val handler = InvocationHandler { _, method, args ->
             when {
-                method.name == "e" && method.parameterCount == 1 -> {
+                method == bind -> {
                     bindSlot(module, args?.firstOrNull())
                     null
                 }
-                method.name == "c" && method.parameterCount == 1 -> null
+                method == click -> {
+                    val view = findItemView(args?.firstOrNull())
+                    if (view != null) launch(view.context, SidebarQuickSlotConfig.current(), module)
+                    null
+                }
                 method.name == "equals" -> ref[0] === args?.firstOrNull()
                 method.name == "hashCode" -> System.identityHashCode(ref[0])
                 method.name == "toString" -> "hyperdock::quickslot"
@@ -557,13 +687,31 @@ object SidebarDockSlotHook : BaseHook() {
         // 宿主在 bind 之后还可能改写这些 view（自己的图标/可见性逻辑），并给图标装点击
         // 监听，因此延后一帧再整体覆盖一次，保证显示内容和点击都归我们。
         itemView.post {
+            if (boundIconView?.get() !== itemView.findViewById<View>(iconResId) || boundIconId != id) {
+                return@post
+            }
             applySlotAppearance(itemView, context, id)
             val listener = View.OnClickListener { launch(context, id, module) }
             itemView.setOnClickListener(listener)
             itemView.findViewById<View>(iconResId)?.setOnClickListener(listener)
         }
         val position = SidebarDockState.displayList.indexOfFirst { it === slotItem }
-        log(module, "slot bound pos=$position id=$id icon=${itemView.findViewById<ImageView>(iconResId)?.drawable != null}")
+        log(
+            module,
+            "slot bound pos=$position id=$id " +
+                "icon=${itemView.findViewById<ImageView>(iconResId)?.drawable != null} " +
+                "cached=${cachedIconId == id}",
+        )
+    }
+
+    /** holder 重新绑定为其它条目时清掉回填目标，避免异步图标覆盖普通应用。 */
+    private fun unbindSlot(holder: Any?) {
+        val itemView = findItemView(holder) ?: return
+        val recorded = boundIconView?.get() ?: return
+        if (itemView.findViewById<View>(iconResId) === recorded) {
+            boundIconId = null
+            boundIconView = null
+        }
     }
 
     /** 把这一行改成"一个图标"的样式：隐藏分割线和占位图，显示并设置图标。 */
@@ -573,30 +721,78 @@ object SidebarDockSlotHook : BaseHook() {
         itemView.findViewById<View>(placeholderResId)?.visibility = View.GONE
         val icon = itemView.findViewById<View>(iconResId) as? ImageView ?: return
         icon.visibility = View.VISIBLE
-        icon.setImageDrawable(slotIcon(context, id))
+        // 记下这一格：异步预热完成时可以直接把图标回填到这里，不用等下一次重绑。
+        boundIconId = id
+        boundIconView = WeakReference(icon)
+        val drawable = slotIcon(context, id) ?: return
+        icon.setImageDrawable(drawable)
     }
 
-    /** 取槽位图标（带缓存）。首次加载可能要走 PackageManager / 资源，之后即时返回。 */
+    /** 取槽位图标（带缓存）。命中即时返回；未命中才现取（跨进程，几十毫秒）。 */
     private fun slotIcon(context: Context, id: String): Drawable? {
         if (id.isBlank()) return null
-        val cached = cachedIcon
-        if (cached != null && cachedIconId == id) return cached
-        val loaded = runCatching { SidebarShortcutController.slotIcon(context, id) }.getOrNull()
+        synchronized(iconLock) {
+            val cached = cachedIcon
+            if (cached != null && cachedIconId == id) return cached
+        }
+        // 缓存里没有：现取一次。优先用 applicationContext，缓存下来的实例才是
+        // 进程级的（不会随侧边栏窗口一起失效），拿不到再退回原 context。
+        val loaded = runCatching { SidebarShortcutController.slotIcon(context.applicationContext, id) }.getOrNull()
+            ?: runCatching { SidebarShortcutController.slotIcon(context, id) }.getOrNull()
         if (loaded != null) {
-            cachedIconId = id
-            cachedIcon = loaded
+            synchronized(iconLock) {
+                // 预热线程可能刚好也在落地，以"当前配置 id"为准，别把旧 id 写回缓存。
+                if (SidebarQuickSlotConfig.current() == id) {
+                    cachedIconId = id
+                    cachedIcon = loaded
+                }
+            }
         }
         return loaded
     }
 
-    /** 预热图标：接管 adapter 时先异步加载一次，等真正绑定就已经在缓存里了。 */
-    private fun preloadIcon(context: Context?) {
-        val ctx = context ?: return
+    /**
+     * 预热槽位图标：后台线程先把图标取回来放进缓存。
+     *
+     * 必须尽量早做（接管 adapter 时就开始），否则真正绑定那一帧缓存还是空的，
+     * 图标就得在主线程上现取 —— 跨进程调用几十毫秒，视觉上就是"慢一拍才出现"。
+     */
+    private fun warmIcon(context: Context?) {
+        val ctx = context?.applicationContext ?: return
         val id = SidebarQuickSlotConfig.current()
-        if (id.isBlank() || (cachedIcon != null && cachedIconId == id)) return
-        Thread {
-            runCatching { slotIcon(ctx.applicationContext, id) }
-        }.start()
+        if (id.isBlank()) return
+        var seq = 0L
+        synchronized(iconLock) {
+            if (cachedIcon != null && cachedIconId == id) return
+            seq = ++iconRequestSeq
+        }
+        iconExecutor.execute {
+            val loaded = runCatching { SidebarShortcutController.slotIcon(ctx, id) }.getOrNull()
+                ?: return@execute
+            val published = synchronized(iconLock) {
+                // 只有"最后一次预热请求"且配置没变过才落地，
+                // 否则旧 id 的图标会把新 id 的缓存顶掉（缓存就永远命中不了）。
+                if (seq == iconRequestSeq && SidebarQuickSlotConfig.current() == id) {
+                    cachedIconId = id
+                    cachedIcon = loaded
+                    true
+                } else {
+                    false
+                }
+            }
+            if (published) publishToBoundView(id, loaded)
+        }
+    }
+
+    /** 异步取到图标后回填到已绑定的那一格（前提是它还显示着同一个 id）。 */
+    private fun publishToBoundView(id: String, drawable: Drawable) {
+        if (boundIconId != id) return
+        val view = boundIconView?.get() ?: return
+        view.post {
+            if (boundIconId == id && boundIconView?.get() === view && SidebarQuickSlotConfig.current() == id) {
+                view.setImageDrawable(drawable)
+            }
+        }
     }
 
     private fun launch(context: Context, id: String, module: XposedModule) {
@@ -623,19 +819,23 @@ object SidebarDockSlotHook : BaseHook() {
      * 就会把应用行当成分割线，最后变成"分割线下面第一个应用独占一行居中"。
      */
     private fun afterBind(module: XposedModule, holder: Any, position: Int) {
-        if (!SidebarDockState.isDividerPosition(position)) return
         val itemView = findItemView(holder) ?: return
         val context = itemView.context ?: return
         resolveResources(context)
         val divider = itemView.findViewById<View>(dividerResId) ?: return
+        if (!SidebarDockState.isDividerPosition(position)) {
+            // 宿主复用 holder 时不一定隐藏上一轮的分割线。
+            divider.visibility = View.GONE
+            return
+        }
         divider.visibility = View.VISIBLE
-        applyDividerWidth(divider, context)
+        applyDividerWidth(divider)
         log(module, "divider bound at $position width=${divider.layoutParams?.width}")
     }
 
-    private fun applyDividerWidth(divider: View, context: Context) {
+    private fun applyDividerWidth(divider: View) {
         val params = divider.layoutParams as? ViewGroup.MarginLayoutParams ?: return
-        val twoColumns = SidebarColumnsHook.currentColumns() > 1
+        val twoColumns = dockRecyclerRef?.get()?.let { SidebarColumnsHook.currentColumns(it) > 1 } == true
         val wantedWidth = if (twoColumns) ViewGroup.LayoutParams.MATCH_PARENT else dividerWidthPx
         val wantedMargin = if (twoColumns) paddingPx else 0
         if (params.width == wantedWidth && params.leftMargin == wantedMargin && params.rightMargin == wantedMargin) {
@@ -647,14 +847,6 @@ object SidebarDockSlotHook : BaseHook() {
         params.marginStart = wantedMargin
         params.marginEnd = wantedMargin
         runCatching { divider.layoutParams = params }
-    }
-
-    private fun resubmit() {
-        val adapter = adapterInstance ?: return
-        val method = submitMethod ?: return
-        val list = nativeList
-        if (list.isEmpty()) return
-        runCatching { method.isAccessible = true; method.invoke(adapter, list, true) }
     }
 
     // ── 点击分发（兜底：宿主监听器没被我们覆盖时） ───────────────────────────

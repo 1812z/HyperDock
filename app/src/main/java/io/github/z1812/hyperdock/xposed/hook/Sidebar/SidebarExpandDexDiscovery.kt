@@ -15,8 +15,7 @@ internal object SidebarExpandDexDiscovery {
         val result = runCatching {
             System.loadLibrary("dexkit")
             DexKitBridge.create(loader, false).use { bridge ->
-                (bridge.findClass { searchPackages("com.miui.dock.sidebar") } +
-                    bridge.findClass { searchPackages("xb") }).distinctBy { it.name }
+                bridge.findClass { }.distinctBy { it.name }
                     .mapNotNull { data -> runCatching { data.getInstance(loader) }.getOrNull() }
             }
         }.getOrElse { emptyList() }

@@ -7,15 +7,7 @@ package io.github.z1812.hyperdock.xposed.hook.Sidebar
  */
 internal object SidebarDockState {
 
-    /**
-     * 分割线条目（原生 `c8.b`：绑定时只显示一条 24dp 的线）。
-     *
-     * **只当作"列表里有没有分割线"的门闩** —— 不要拿它去比对每个 position 的类：
-     * ViewHolder 是复用的，分割线那行的 holder 回收给应用行之后，那条线可能还留着
-     * VISIBLE（宿主只在绑定分割线条目时 show，从不主动 hide），按类判断会把某个应用
-     * 误认成分割线，于是"分割线下面第一个应用独占一行居中"。
-     * 真正用来决定占格的是固定位置，见 [isDividerPosition]。
-     */
+    /** 分割线模型类型；判断当前模型，不能根据复用 holder 的 View 可见性判断。 */
     @Volatile var dividerClass: Class<*>? = null
 
     /** 速记条目（原生 `c8.k`）。 */
@@ -27,21 +19,10 @@ internal object SidebarDockState {
     /** 最近一次提交给 adapter 的（已注入的）列表，供 SpanSizeLookup 查询。 */
     @Volatile var displayList: List<Any> = emptyList()
 
-    /**
-     * 顶部区域占了几格：速记 1 格（未配槽位时独占一行）+ 配了槽位则再 1 格。
-     * 分割线紧跟其后，所以它的下标恒等于这个数量。
-     */
-    private fun dividerIndex(): Int = if (slotItem != null) 2 else 1
-
-    /**
-     * [position] 是不是分割线那一行。
-     *
-     * 原生列表顺序恒为 `[速记][分割线][应用…]`，我们把槽位插在速记之后，
-     * 因此分割线的位置是确定的：没槽位时 index 1，有槽位时 index 2。
-     */
+    /** 横屏可能没有速记和分割线，位置必须以本次提交的模型为准。 */
     fun isDividerPosition(position: Int): Boolean {
-        if (dividerClass == null) return false
-        return position == dividerIndex()
+        val type = dividerClass ?: return false
+        return displayList.getOrNull(position)?.javaClass == type
     }
 
     /**

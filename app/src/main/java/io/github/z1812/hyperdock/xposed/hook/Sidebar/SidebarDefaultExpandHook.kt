@@ -298,19 +298,16 @@ object SidebarDefaultExpandHook : BaseHook() {
         val panelField = findPanelField(target) ?: return
         panelField.isAccessible = true
         for (method in methods) {
-            val before = runCatching { panelField?.get(target) }.getOrNull()
+            val before = runCatching { panelField.get(target) }.getOrNull()
             runCatching { method.isAccessible = true; method.invoke(target) }
-            val after = runCatching { panelField?.get(target) }.getOrNull()
+            val after = runCatching { panelField.get(target) }.getOrNull()
             if (after != null && after !== before) return
         }
     }
 
-    /** TurboLayout's All Apps attach entry is W() on the current host build. */
+    /** 根据面板构造调用定位原生全部应用展开入口。 */
     private fun findNativePanelExpandMethod(clazz: Class<*>): Method? {
-        return runCatching { clazz.getDeclaredMethod("W") }
-            .getOrNull()
-            ?.takeIf { it.returnType == Void.TYPE && it.parameterCount == 0 }
-            ?: SidebarExpandMethodDiscovery.expansion(clazz)
+        return SidebarExpandMethodDiscovery.expansion(clazz)
     }
 
     private fun setDockExpanded(dockLayout: Any) {
